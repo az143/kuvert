@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.2 2003/01/15 15:03:03 az Exp az $
+#   $Id: kuvert,v 2.3 2003/01/15 22:57:54 az Exp az $
 #--
 
 use strict;
@@ -45,6 +45,7 @@ my (%config,@overrides,%keys);
 # the passphrases are stored here if agent is not a/v
 my %secrets=();
 my $debug=0;
+my @detailederror=();
 
 sub main
 {
@@ -214,9 +215,11 @@ sub main
 	    eval { process_file(*FH,"$config{queuedir}/$file"); };
 	    if ($@)
 	    {
+		chomp $@;
+		
 		rename("$config{queuedir}/$file","$config{queuedir}/.$file")
 		    || &bailout("cant rename $config{queuedir}/$file: $!");
-		logit("problem \"$@\" processing $file,"
+		logit("problem \"$@\" while processing $file,"
 		      ." left as \".$file\".\n");
 		send_bounce($@,$file);
 	    }
@@ -374,7 +377,7 @@ sub process_file
 	    foreach (@recips)
 	    {
 		logit("sending mail (bcc,crypt,$type) to $_");
-		&crypt_send($in_ent,$input,$type,$orig_header,$keys{$type}->{$_},$_);
+		&crypt_send($in_ent,$input,$type,$orig_header,[$keys{$type}->{$_}],$_);
 	    }
 	    next;
 	}
@@ -433,7 +436,7 @@ sub sign_send
 	    $debug && logit("bad passphrase, retry");
 	    my $res=0xffff & system("$config{clientpath} delete "
 				    .$config{$type."key"}." >$config{tempdir}/subproc 2>&1");
-	    bailout("error deleting broken passphrasee from agent: $res",
+	    bailout("error deleting broken passphrase from agent: $res",
 		    "$config{tempdir}/subproc")
 		if ($res);		
 	}
@@ -682,7 +685,13 @@ sub read_keyrings
 	    # and be sure to skip these uid's, too
 	    if ($config{usepgp} && $info[3] eq "1")
 	    {
-		&logit("ignoring stdkey 0x$info[4]") if ($debug);
+		&logit("ignoring stdkey 0x$info[4]") if ($debug && $info[4]);
+		undef $lastkey;
+		next;
+	    }
+	    elsif (!$config{ngkey} && $info[3] ne "1")
+	    {
+		&logit("ignoring ngkey 0x$info[4]") if ($debug && $info[4]);
 		undef $lastkey;
 		next;
 	    }
@@ -1041,6 +1050,7 @@ sub qp_fix_parts
 }
 
 # notifies the sender of a problem, via email
+# retrieves the detailed error message from @detailederror
 # no return value, exception on problems
 sub send_bounce
 {
@@ -1050,8 +1060,10 @@ sub send_bounce
 	bailout("cant fork $config{mta}: $!");
     print F "From: $username\nTo: $username\nSubject: $progname Mail Sending Failure\n\n"
 	."Your mail $config{queuedir}/$file could not be sent to some or all recipients.\n"
-	."The error message was:\n\n$res\n\n"
-	."$progname has no reliable way of figuring out whether this failure was partial\n"
+	."The error message was:\n-----\n$res\n-----\n\n";
+    print F "Detailed error message:\n-----\n"
+	.join("",@detailederror)."\n-----\n\n" if (@detailederror);
+    print F "$progname has no reliable way of figuring out whether this failure was partial\n"
 	."or total, so please look into the log for further error indications.\n\n"
 	."$progname has backed the failed mail up as $config{queuedir}/.$file;\n"
 	."If you wish to retry again for all original recipients, just rename the file back to\n"
@@ -1107,7 +1119,7 @@ sub get_secret
 	    chomp (my $phrase=<STDIN>);
 	    ReadMode("restore");
 	    bailout("error reading $type passphrase: $!")
-		if (eof(STDIN));
+		if (!defined($phrase));
 	    print "\n";
 	    $secrets{$id}=$phrase;
 	    $phrase="x" x 64; 
@@ -1133,7 +1145,7 @@ sub sign_encrypt
     }
     else
     {
-	$passphrase=$secrets{($type eq "std"?"stdkey":"ngkey")};
+	$passphrase=$secrets{$config{($type eq "std"?"stdkey":"ngkey")}};
     }
 
     # how to arrange the command
@@ -1236,7 +1248,7 @@ sub sign_encrypt
     
 	bailout("error running sign prog: $?","$config{tempdir}/subproc") if ($? == 0xff00);
 	bailout("sign prog died from signal " . ($? & 0x7f),"$config{tempdir}/subproc") if ($? <= 0x80);
-	bailout("sign prog returned error ".$?>>8,"$config{tempdir}/subproc") if ($?>>8);
+	bailout(("sign prog returned error ".($?>>8)),"$config{tempdir}/subproc") if ($?>>8);
     }
 
     # ok, must be in compat mode...let's complete the nasty construction
@@ -1342,8 +1354,8 @@ sub findaction
 	}
 	elsif ($force eq "fallback")
 	{
-	    # fallback-logic: ng-crypt or std-crypt, otherwise ngsign
-	    # -force: ng- or std-crypt for all, otherwise ngsign
+	    # fallback-logic: ng-crypt or std-crypt, otherwise ngsign or stdsign
+	    # -force: ng- or std-crypt for all, otherwise ngsign or stdsign
 	    $force="ngsign" 	
 		if (grep(!exists $keys{ng}->{$_} 
 			 && !exists $keys{std}->{$_}, @affected));
@@ -1357,21 +1369,29 @@ sub findaction
     }
 
     # check the actions for fallback, ng or std and expand that
+    # also bail out if no suitable keys available!
     foreach $addr (@{$allref},@{$bccref})
     {
 	if ($actions{$addr} eq "fallback")
 	{
-	    ($keys{ng}->{$addr} && ($actions{$addr}="ng")) 
-		|| ($keys{std}->{$addr} && ($actions{$addr}="std"))
-		|| ($actions{$addr}="ngsign");
+	    ($config{ngkey} && $keys{ng}->{$addr} && ($actions{$addr}="ng")) 
+		|| ($config{stdkey} && $keys{std}->{$addr} && ($actions{$addr}="std"))
+		|| ($config{ngkey} && ($actions{$addr}="ngsign"))
+		|| ($config{stdkey} && ($actions{$addr}="stdsign"))
+		|| &bailout("oooops. no keys available for fallback action for $addr");
 	}
-	elsif ($actions{$addr} eq "ng")
+	elsif ($actions{$addr} =~ /^ng(sign)?$/)
 	{
-	    $actions{$addr}="ngsign" if (!$keys{ng}->{$addr});
+	    bailout("no ng key available but ng action required for $addr") 
+		if (!$config{ngkey});
+	    $actions{$addr}="ngsign" if ($actions{$addr} eq "ng" && !$keys{ng}->{$addr});
 	} 
-	elsif ($actions{$addr} eq "std")
+	elsif ($actions{$addr} =~ /^std(sign)?$/)
 	{
-	    $actions{$addr}="stdsign" if (!$keys{std}->{$addr});
+	    bailout("no std key available but std action required for $addr") 
+		if (!$config{stdkey});
+	    $actions{$addr}="stdsign" if ($actions{$addr} eq "std" && !$keys{std}->{$addr});
+
 	} 
 	$debug && logit("final action: $addr -> $actions{$addr}");
     }
@@ -1398,19 +1418,19 @@ sub bailout
 }
 
 # log the msg(s) to syslog or the logfile
+# the detailed info is put into @detailederror
 # args: message, path to file with details
 # no retval.
 sub logit
 {
     my ($msg,$detailfn)=@_;
-    my @lotsaoutput=($msg);
 
     if ($detailfn)
     {
-	push @lotsaoutput,"Details:";
+	@detailederror=();
 	if (open(DF,$detailfn))
 	{
-	    push @lotsaoutput,<DF>;
+	    push @detailederror,<DF>;
 	    close DF;
 	}
     }
@@ -1420,19 +1440,13 @@ sub logit
 	# logfile is opened with autoflush set to 1, 
 	# so no extra flushing needed
 	# we're more or less emulating the syslog format here...
-	foreach (@lotsaoutput)
-	{
-	    print { $config{logfh} } scalar(localtime)." $progname\[$$\] $_\n";
-	}
+	print { $config{logfh} } scalar(localtime)." $progname\[$$\] $msg\n";
     }
     else
     {
 	setlogsock('unix');
 	openlog($progname,"pid,cons","mail");
-	foreach (@lotsaoutput)
-	{
-	    syslog("notice",$_);
-	}
+	syslog("notice",$msg);
 	closelog;
     }
 }
