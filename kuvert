@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.7 2001/12/12 13:31:02 az Exp az $
+#   $Id: kuvert,v 1.8 2002/01/02 06:39:34 az Exp az $
 #--
 
 use strict;
@@ -37,7 +37,7 @@ my %options;
 if (!getopts("dkrn",\%options) || @ARGV)
 {
     print "usage: $0 [-n] [-d] | [-k] | [-r] \n-k: kill running $0\n"
-	."-d: debug mode\n-r: reload keyrings and configfile\n-n don't fork";
+	."-d: debug mode\n-r: reload keyrings and configfile\n-n don't fork\n";
     exit 1;
 }
 
