@@ -28,8 +28,8 @@ If there are options given other than
 .Op Fl "t",
 .Op Fl "v",
 .Op Fl "oi",
-.Op Fl "d",
-.Op Fl "e",
+.Op Fl "od",
+.Op Fl "oe",
 the standard MTA 
 .Pa /usr/lib/sendmail
 is executed with the options and arguments given. The result code in this case
