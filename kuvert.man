@@ -6,7 +6,7 @@ kuvert \- automatically sign and/or encrypt mail based on the recipients
 .Sh SYNOPSIS
 .Nm kuvert
 .Op Fl d
-.Op Fl r | Fl k | Fl n
+.Op Fl r | Fl k | Fl n | Fl v
 .Sh DESCRIPTION
 .Nm kuvert 
 reads mails from its queue, analyzes the recipients, decides to whom
@@ -48,6 +48,12 @@ With the option
 does not 
 .Xr fork 2
 but keeps running in the foreground.
+.Pp
+The option
+.Fl v
+makes
+.Nm kuvert
+output its version number and exit immediately.
 .Pp
 At startup 
 .Nm kuvert
