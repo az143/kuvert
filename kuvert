@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.19 2002/04/26 02:11:33 az Exp az $
+#   $Id: kuvert,v 1.20 2002/04/27 15:49:50 az Exp az $
 #--
 
 use strict;
@@ -60,7 +60,7 @@ my $queuedir="$home/.kuvert_queue";
 my $mta="/usr/lib/sendmail -om -oi -oem";
 
 # where to put temp files for parsing mime
-my $tempdir="/tmp/kuvert.$<.$$";
+my $tempdir=($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp")."/kuvert.$<.$$";
 # where to put pgp/gpg in- and output
 my $tempfile_in="input.tmp";
 my $tempfile_out="output.tmp";
@@ -162,6 +162,13 @@ if ($options{"k"} || $options{"r"})
     }
     unlink $pidf if ($options{"k"});
     exit 0;
+}
+
+if (! -r $config)
+{
+    logit("no configuration file, can't start");
+    die("no configuration file, can't start");
+    exit 1;
 }
 
 logit("version $version starting");
@@ -703,6 +710,7 @@ sub handle_reload
     if (!open (F,$config))
     {
 	logit("cant open $config: $!\n");
+	die "can't open $config: $!\n";
     }
     else
     {
