@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.22 2002/09/19 09:51:25 az Exp az $
+#   $Id: kuvert,v 1.23 2002/09/19 14:58:21 az Exp az $
 #--
 
 use strict;
@@ -149,69 +149,56 @@ if ($options{"k"} || $options{"r"})
     my $pid;
     my $sig=($options{"r"}?'USR1':'TERM');
 
-    open(PIDF,"$pidf") || die "cant open $pidf: $!\n";
+    open(PIDF,"$pidf") || &bailout("cant open $pidf: $!");
     $pid=<PIDF>;
     close(PIDF);
     chomp $pid;
 
-    die "no valid pid found, cant kill any process.\n"
+    &bailout("no valid pid found, cant kill any process.")
 	    if (!$pid);
-    if (!kill $sig, $pid)
-    {
-	die "cant kill -$sig $pid: $!\n";
-    }
+    &bailout("cant kill -$sig $pid: $!")
+	if (!kill $sig, $pid);
     unlink $pidf if ($options{"k"});
     exit 0;
 }
 
-if (! -r $config)
-{
-    logit("no configuration file, can't start!");
-    die("no configuration file, can't start!\n");
-    exit 1;
-}
+&bailout("no configuration file, can't start!")
+    if (! -r $config);
 
 logit("version $version starting");
 
 # and now for some real work...
 if (-f "$pidf")			# retain content of pidf, in case we cant lock it
 {
-    open(PIDF,"+<$pidf") || die "cant open <+$pidf: $!\n";
+    open(PIDF,"+<$pidf") || &bailout("cant open <+$pidf: $!");
 }
 else
 {
-    open(PIDF,">$pidf") || die "cant open >$pidf: $!\n";
-}
-if (!flock(PIDF,LOCK_NB|LOCK_EX))
-{
-    logit("cant lock $pidf ($!), another process running?, exiting");
-    die "cant lock $pidf ($!), another process running?, exiting\n";
+    open(PIDF,">$pidf") || &bailout("cant open >$pidf: $!");
 }
 
-# get the list of known keys and the configuration-stuff,
-# setup the queuedir and tempdir
-# the hup-handler does this
-handle_reload();
+&bailout("cant lock $pidf ($!), another process running?, exiting")
+    if (!flock(PIDF,LOCK_NB|LOCK_EX));
+
+# read the config, setup the queuedir and tempdir
+&read_config;
 
 # cleanup tempdir
 my $res;
-if ($res=cleanup($tempdir,0))
-{
-    logit("cant clean $tempdir: $res");
-    die "cant clean $tempdir: $res\n";
-}
+&bailout("cant clean $tempdir: $res")
+    if ($res=cleanup($tempdir,0));
 
 # get the passphrase(s) and setup secret-agent if wanted
 # this has to be done before any fork, because the environment
 # vars for secret-agent must be retained
 $res=&get_verify_secrets;
-die "secrets could not be initialized properly: $res\n" if ($res);
+&bailout("secrets could not be initialized properly: $res") if ($res);
 
 if (!$options{"d"} && !$options{"n"})
 {
     my $res=fork;
 
-    die "fork failed: $!\n"
+    &bailout("fork failed: $!")
 	if ($res == -1);
     exit 0
 	if ($res);
@@ -221,6 +208,8 @@ if (!$options{"d"} && !$options{"n"})
 print PIDF "$$\n";
 PIDF->flush;
 truncate PIDF,tell(PIDF);	# and make sure there's nothing else in there...
+# now read the keyrings
+&read_keyrings;
 
 # install the handler for conf reread
 $SIG{'USR1'}=\&handle_reload;
@@ -233,11 +222,8 @@ $SIG{'TERM'}=\&handle_term;
 # the main loop, left only via signal handler handle_term
 while (1)
 {
-    if (!opendir(D,"$queuedir"))
-    {
-	logit("cant open $queuedir: $!");
-	die "cant open $queuedir: $!";
-    }
+    &bailout("cant open $queuedir: $!")
+	if (!opendir(D,"$queuedir"));
 
     my $file;
     foreach $file (readdir(D))
@@ -702,164 +688,169 @@ sub handle_term
 }
 
 # reread configuration file and keyrings
+# no args or return value; intended as a sighandler.
 sub handle_reload
+{
+    logit("rereading config file");
+    &read_config;
+    &read_keyrings;
+}
+
+# read keyrings into global hashes
+sub read_keyrings
+{
+    logit("reading std keyring.");
+    %stdkeys=&std_listkeys;
+    logit("reading ng keyring.");
+    %ngkeys=&ng_listkeys;
+}
+
+sub read_config
 {
     my (@tmp,$lastkey,$mtaopt);
 
     # get the list of special adresses and adress-regexps
-    if (!open (F,$config))
+    &bailout("cant open $config: $!\n")
+	if (!open (F,$config));
+    
+    logit("reading config file");
+    %config=();
+    @configkeys=();
+    while (<F>)
     {
-	logit("cant open $config: $!\n");
-	die "can't open $config: $!\n";
-    }
-    else
-    {
-	logit("reading config file");
-	%config=();
-	@configkeys=();
-	while (<F>)
+	chomp;
+	next if (/^\#/ || /^\s*$/); # strip comments and empty lines
+	# if the keyid given is 0, don't do ng pgp at all
+	if (/^NGKEY\s+(\S.*)$/)
 	{
-	    chomp;
-	    next if (/^\#/ || /^\s*$/); # strip comments and empty lines
-	    # if the keyid given is 0, don't do ng pgp at all
-	    if (/^NGKEY\s+(\S.*)$/)
-	    {
-		$ng_defkey=$1;
-		logit("set default ng key ng to $1") if ($options{"d"});
-		next;
-	    }
-	    # if the keyid given is 0, don't do std pgp at all
-	    if (/^STDKEY\s+(\S.*)$/)
-	    {
-		$std_defkey=$1;
-		logit("set default std key to $1") if ($options{"d"});
-		next;
-	    }
-	    if (/^PGPPATH\s+(\S.+)\s*$/)
-	    {
-		$PGP=$1;
-		logit("set pgppath to $1") if ($options{"d"});
-		next;
-	    }
-	    if (/^GPGPATH\s+(\S.+)\s*$/)
-	    {
-		$GPG=$1;
-		logit("set gpgpath to $1") if ($options{"d"});
-		next;
-	    }
-	    if (/^USEPGP\s+(\d)/)
-	    {
-		$use_pgp=$1;
-		logit("set use_pgp to $1") if ($options{"d"});
-		next;
-	    }
-	    if (/^AGENTPATH\s+(\S.+)\s*$/) # 
-	    {
-		$agent=$1;
-		logit("set agent to $1") if ($options{"d"});
-		next;
-	    }
-	    if (/^CLIENTPATH\s+(\S.+)\s*$/)
-	    {
-		$client=$1;
-		logit("set client to $1") if ($options{"d"});
-		next;
-	    }
-	    if (/^MTA\s+(\S.+)\s*$/)
-	    {
-		$mtaopt=$1;
-		logit("set mta to $1") if ($options{"d"});
-		next;
-	    }
-	    if (/^SECRETONDEMAND\s+(\d)/)
-	    {
-		$secret_on_demand=$1;
-		logit("set secret_on_demand to $1") if ($options{"d"});
-		next;
-	    }
-	    if (/^ALWAYSTRUST\s+(\d)/)
-	    {
-		$alwaystrust=$1;
-		logit("set alwaystrust to $1") if ($options{"d"});
-		next;
-	    }
-
-	    if (/^QUEUEDIR\s+(\S+)\s*$/)
-	    {
-		logit("set queuedir to $1") if ($options{"d"});
-		$queuedir=$1;
-		next;
-	    }
-
-	    if (/^INTERVAL\s+(\d+)\s*$/)
-	    {
-		logit("set interval to $1") if ($options{"d"});
-		$interval=$1;
-		next;
-	    }
+	    $ng_defkey=$1;
+	    logit("set default ng key ng to $1") if ($options{"d"});
+	    next;
+	}
+	# if the keyid given is 0, don't do std pgp at all
+	if (/^STDKEY\s+(\S.*)$/)
+	{
+	    $std_defkey=$1;
+	    logit("set default std key to $1") if ($options{"d"});
+	    next;
+	}
+	if (/^PGPPATH\s+(\S.+)\s*$/)
+	{
+	    $PGP=$1;
+	    logit("set pgppath to $1") if ($options{"d"});
+	    next;
+	}
+	if (/^GPGPATH\s+(\S.+)\s*$/)
+	{
+	    $GPG=$1;
+	    logit("set gpgpath to $1") if ($options{"d"});
+	    next;
+	}
+	if (/^USEPGP\s+(\d)/)
+	{
+	    $use_pgp=$1;
+	    logit("set use_pgp to $1") if ($options{"d"});
+	    next;
+	}
+	if (/^AGENTPATH\s+(\S.+)\s*$/) # 
+	{
+	    $agent=$1;
+	    logit("set agent to $1") if ($options{"d"});
+	    next;
+	}
+	if (/^CLIENTPATH\s+(\S.+)\s*$/)
+	{
+	    $client=$1;
+	    logit("set client to $1") if ($options{"d"});
+	    next;
+	}
+	if (/^MTA\s+(\S.+)\s*$/)
+	{
+	    $mtaopt=$1;
+	    logit("set mta to $1") if ($options{"d"});
+	    next;
+	}
+	if (/^SECRETONDEMAND\s+(\d)/)
+	{
+	    $secret_on_demand=$1;
+	    logit("set secret_on_demand to $1") if ($options{"d"});
+	    next;
+	}
+	if (/^ALWAYSTRUST\s+(\d)/)
+	{
+	    $alwaystrust=$1;
+	    logit("set alwaystrust to $1") if ($options{"d"});
+	    next;
+	}
+	
+	if (/^QUEUEDIR\s+(\S+)\s*$/)
+	{
+	    logit("set queuedir to $1") if ($options{"d"});
+	    $queuedir=$1;
+	    next;
+	}
+	
+	if (/^INTERVAL\s+(\d+)\s*$/)
+	{
+	    logit("set interval to $1") if ($options{"d"});
+	    $interval=$1;
+	    next;
+	}
 
 
-	    if (/^TEMPDIR\s+(\S+)\s*$/)
-	    {
-		logit("set tempdir to $1") if ($options{"d"});
-		$tempdir=$1;
-		next;
-	    }
+	if (/^TEMPDIR\s+(\S+)\s*$/)
+	{
+	    logit("set tempdir to $1") if ($options{"d"});
+	    $tempdir=$1;
+	    next;
+	}
 
-	    if (/^LOGFILE\s+(\S+)\s*$/)
-	    {
-		# close old logfile if there is one
-		close $lf
-		    if ($logfile && $logfile ne $1);
-		$logfile=$1;		
-		# we append to the logfile
-		if (!open($lf,">>$logfile"))
-		{
-		    logit("cant open logfile $logfile: $!");
-		    die("cant open logfile $logfile: $!\n");
-		}
-		$lf->autoflush(1);
-		logit("set logfile to $1") if ($options{"d"});
-		next;
-	    }
+	if (/^LOGFILE\s+(\S+)\s*$/)
+	{
+	    # close old logfile if there is one
+	    close $lf
+		if ($logfile && $logfile ne $1);
+	    $logfile=$1;		
+	    # we append to the logfile
+	    &bailout("cant open logfile $logfile: $!")
+		if (!open($lf,">>$logfile"));
+	    $lf->autoflush(1);
+	    logit("set logfile to $1") if ($options{"d"});
+	    next;
+	}
 
-	    if (/^(\S+)\s+(\S+)\s*$/)
+	if (/^(\S+)\s+(\S+)\s*$/)
+	{
+	    my ($key,$action)=(lc($1),lc($2));
+	    if ($action=~/^(none|std(sign)?|ng(sign)?|fallback)(-force)?$/)
 	    {
-		my ($key,$action)=(lc($1),lc($2));
-		if ($action=~/^(none|std(sign)?|ng(sign)?|fallback)(-force)?$/)
-		{
-		    $config{$key}=$action;
-		    push @configkeys, $key;
-		    logit("got conf $action for $key") if ($options{"d"});
-		}
-		else
-		{
-		    logit("ignoring bad action \"$action\" for $key");
-		}
+		$config{$key}=$action;
+		push @configkeys, $key;
+		logit("got conf $action for $key") if ($options{"d"});
+	    }
+	    else
+	    {
+		logit("ignoring bad action \"$action\" for $key");
 	    }
 	}
+	
 	close F;
 
 	# generate queuedir if not existing
 	if (!-d $queuedir)
 	{
 	    unlink "$queuedir";
-	    if (!mkdir($queuedir,0700))
-	    {
-		logit("cant mkdir $queuedir: $!");
-		die "cant mkdir $queuedir: $!\n";
-	    }
+	    &bailout("cant mkdir $queuedir: $!")
+		if (!mkdir($queuedir,0700));
 	}
 	# check queuedir owner & perm
 	elsif ((stat($queuedir))[4] != $<)
 	{
-	    logit("$queuedir is not owned by you - refusing to run");
-	    die "$queuedir is not owned by you - refusing to run";
+	    &bailout("$queuedir is not owned by you - refusing to run");
 	}
 	elsif ((stat($queuedir))[2]&0777 != 0700)
 	{
-	    logit("$queuedir does not have mode 0700 - refusing to run");
-	    die "$queuedir does not have mode 0700 - refusing to run";
+	    &bailout("$queuedir does not have mode 0700 - refusing to run");
 	}
 
 	# gen tempdir for storing mime-stuff
@@ -868,19 +859,16 @@ sub handle_reload
 	    unlink "$tempdir";
 	    if (!mkdir($tempdir,0700))
 	    {
-		logit("cant mkdir $tempdir: $!");
-		die "cant mkdir $tempdir: $!\n";
+		&bailout("cant mkdir $tempdir: $!");
 	    }
 	}
 	elsif ((stat($tempdir))[4] != $<)
 	{
-	    logit("$tempdir is not owned by you - refusing to run");
-	    die "$tempdir is not owned by you - refusing to run";
+	    &bailout("$tempdir is not owned by you - refusing to run");
 	}
 	elsif ((stat($tempdir))[2]&0777 != 0700)
 	{
-	    logit("$tempdir does not have mode 0700 - refusing to run");
-	    die "$tempdir does not have mode 0700 - refusing to run";
+	    &bailout("$tempdir does not have mode 0700 - refusing to run");
 	}
     }
 
@@ -889,48 +877,27 @@ sub handle_reload
     $secret_on_demand=0 if (!$use_agent);
 
     # sanity checks
-    if (! -x $GPG)
-    {
-	logit("bad ng executable '$GPG' -- exiting");
-	die "bad ng executable '$GPG' -- exiting\n";
-    }
+    &bailout("bad ng executable '$GPG' -- exiting")
+	if (! -x $GPG);
 
-    if ($use_pgp && ! -x $PGP)
-    {
-	logit("bad std executable '$PGP' -- exiting");
-	die "bad std executable '$PGP' -- exiting\n";
-    }
+    &bailout("bad std executable '$PGP' -- exiting")
+	if ($use_pgp && ! -x $PGP);
 
     if ($mtaopt && $mtaopt =~ /^(\S+)/)
     {
-	if (! -x $1)
-	{
-	    logit("bad MTA '$mtaopt' -- exiting");
-	    die "bad MTA '$mtaopt' -- exiting\n";
-	}
-	else
-	{
-	    $mta=$mtaopt;
-	}
+	&bailout("bad MTA '$mtaopt' -- exiting")
+	    if (! -x $1);
+	$mta=$mtaopt;
     }
     
     if ($use_agent)		
     {
 	foreach my $x ($client,$agent)
 	{
-	    if (! -x $x)
-	    {
-		logit("bad agent executable '$x' -- exiting");
-		die "bad agent executable '$x' -- exiting\n";
-	    }
+	    &bailout("bad agent executable '$x' -- exiting")
+		if (! -x $x);
 	}
     }
-
-    logit("reading std keyring.");
-    %stdkeys=&std_listkeys;
-    logit("reading ng keyring.");
-    %ngkeys=&ng_listkeys;
-    return;
 }
 
 # traverses the entity and sets all parts with
@@ -1580,18 +1547,24 @@ sub askput_secret
 {
     my ($id)=@_;
     my ($res,$phrase);
+    
 
     if ($use_agent)
     {
+	# if x11 is running and get is used, then the agent will
+	# run a graphical query program. otherwise things use the command line
+	my $cmd="$client put $id 2>$tempdir/subprocess";
+	$cmd="$client get $id >$tempdir/subprocess 2>&1" if ($ENV{DISPLAY});
+
 	# now let the secret client handle the situation:
 	# it asks for the secret and stores it
-	$res = 0xffff & system "$client put $id 2>$tempdir/subprocess";
+	$res = 0xffff & system "$cmd";
 	if ($res)
 	{
 	    open F,"$tempdir/subprocess";
 	    my @result=<F>;
 	    close F;
-	    return "secret-client returned error code $res\n"
+	    return "$client returned error code $res\n"
 		.join("\n",@result);
 	}
 	return 0;
@@ -1684,8 +1657,7 @@ sub get_verify_secrets
     my ($stdkey,$ngkey)=&lookup_defkeys;
     my $res;
 
-    # set the std std keys if no overrides given and keys were returned
-    # by the lookup
+    # set the std keys if no overrides given and keys were found
     $std_defkey=$stdkey if (!defined($std_defkey) && $stdkey);
     $ng_defkey=$ngkey if (!defined($ng_defkey) && $ngkey);
 
@@ -1693,7 +1665,6 @@ sub get_verify_secrets
 	if (!defined $std_defkey);
     return "no default key for ng known"
 	if (!defined $ng_defkey);
-
 
     # if use_agent is set, check if the agent is running and start one
     # if needed.
@@ -1726,15 +1697,12 @@ sub get_verify_secrets
 		# the child that should exec the quintuple-agent
 	    {
 		exec "$agent"
-		    || die "cant exec $agent: $!\n";
+		    || &bailout("cant exec $agent: $!");
 	    }
 	}
     }
-    elsif ($secret_on_demand)
-    {
-	return "secret_on_demand without agent-support is not possible.";
-    }
-    if (!$secret_on_demand || !$ENV{"DISPLAY"})
+    
+    if (!$secret_on_demand)
     {
 	# get the std passphrase and verify it,
 	# but only if we're doing std pgp at all
@@ -1744,7 +1712,8 @@ sub get_verify_secrets
 	    do
 	    {
 		$res=&askput_secret($std_defkey);
-		return $res if ($res);
+		bailout("could not read passphrase for $std_defkey: $res") 
+		    if ($res);
 		$res=std_sign(undef,undef);
 		print "wrong passphrase, try again.\n"
 		    if ($res);
@@ -1759,7 +1728,8 @@ sub get_verify_secrets
 	    do
 	    {
 		$res=&askput_secret($ng_defkey);
-		return $res if ($res);
+		bailout("could not read passphrase for $ng_defkey: $res") 
+		    if ($res);
 		$res=ng_sign(undef,undef);
 		print "wrong passphrase, try again.\n"
 		    if ($res);
@@ -1779,19 +1749,6 @@ sub wipe_keys
 
     if ($use_agent)
     {
-	if ($std_defkey)
-	{
-	    $res = 0xffff & system "$client delete $std_defkey";
-	    &logit("problem deleting secret for $std_defkey: $res")
-		if ($res);
-	}
-	if ($ng_defkey)
-	{
-	    $res = 0xffff & system "$client delete $ng_defkey";
-	    &logit("problem deleting secret for $ng_defkey: $res")
-		if ($res);
-	}
-
 	if ($private_agent)
 	{
 	    # kill the private agent process
@@ -1799,12 +1756,27 @@ sub wipe_keys
 	    &logit("problem killing $private_agent: $!") if (!$res);
 	    wait;
 	}
+	else
+	{
+	    if ($std_defkey)
+	    {
+		$res = 0xffff & system "$client delete $std_defkey";
+		&logit("problem deleting secret for $std_defkey: $res")
+		    if ($res);
+	    }
+	    if ($ng_defkey)
+	    {
+		$res = 0xffff & system "$client delete $ng_defkey";
+		&logit("problem deleting secret for $ng_defkey: $res")
+		    if ($res);
+	    }
+	}
     }
     return "";
 }
 
 
-# requests the passphrase from secret agent and runs it 
+# requests the passphrase from the agent and runs it 
 # through the usual verification process.
 # does not stop until the passphrase passes the test.
 # does assume that secret agent is running (will not be called
@@ -1828,7 +1800,7 @@ sub verify_passphrase
 	
 	# ok? then exit
 	return 0 if (!$res);
-	# otherwise nuke the key in order to make 
+	# otherwise nuke the key and redo this
 	system("$client delete $key");
     }
     exit 1;			# must not reach here
@@ -1936,6 +1908,13 @@ sub findaction
     return %actions;
 }
 
-    
+# logging and dying with a message
+# does not return. one arg: the message to spit out
+sub bailout
+{
+    my ($msg)=@_;
 
+    logit($msg);
+    die($msg.'\n');
+}
     
