@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.11 2003/04/25 07:52:15 az Exp az $
+#   $Id: kuvert,v 2.12 2003/08/03 01:45:37 az Exp az $
 #--
 
 use strict;
@@ -92,8 +92,16 @@ sub main
 	exit 0;
     }
 
-    &bailout("no configuration file \"$rcfile\" -- exiting")
-	if (! -r $rcfile);
+    if (! -e $rcfile)
+    {
+	open(F,">$rcfile") || &bailout("can't create $rcfile: $! -- exiting");
+	print F "# configuration file for kuvert\n"
+	    ."# see kuvert(1) for details\n";
+	close(F);
+	1==chmod(0600,$rcfile) || 
+	    &bailout("can't chmod $rcfile: $! -- exiting");
+	print STDERR "created blank configuration file $rcfile\n"
+    }
 
     # retain content of pidf, in case we cant lock it 
     if (-f "$pidf")			
