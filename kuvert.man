@@ -104,9 +104,10 @@ The temporary directory is cleaned and
 processes either a 
 next message or waits for new messages.
 .Pp
-If there are problems, kuvert prepends a dot 
-.Ql \&.
-to the current message to and sends an error message back to the sender.
+If there are problems, kuvert puts a dot 
+.Ql \&. 
+at the beginning of the filename of the current message 
+and sends an error message back to the sender.
 .Sh CONFIGURATION
 .Nm kuvert
 allows for configuration with a configuration file
