@@ -1,4 +1,4 @@
-.Dd January 31, 2002
+.Dd April 25, 2002
 .Dt KUVERT 1
 .Os Unix
 .Sh NAME
@@ -101,12 +101,14 @@ Afterwards the parsed MIME entity is amended with the signature or
 replaced with the encrypted data and is sent off using the MTA.
 The temporary directory is cleaned and 
 .Nm kuvert
-processes either a 
-next message or waits for new messages.
+processes either the
+next queued message or waits for new messages.
 .Pp
-If there are problems, kuvert puts a dot 
+If there are problems, kuvert disables further processing of the respective
+queuefile (it adds a 
 .Ql \&. 
-at the beginning of the filename of the current message 
+at the beginning of the filename, thus making the file ignored for further
+queue-runs)
 and sends an error message back to the sender.
 .Sh CONFIGURATION
 .Nm kuvert
@@ -127,11 +129,7 @@ Directives can either be:
 .It
 a directive name followed by whitespace and then a value,
 .It 
-or a regular expression matching an email address, followed by whitespace and an action keyword. The regular expression may be any regular expression 
-.Xr perl 1
-supports, but has to be written without the bracketing 
-.Ql / Ns
--characters.
+or a regular expression matching an email address, followed by whitespace and an action keyword.
 .El
 .Pp
 The list of directives kuvert understands:
@@ -201,7 +199,7 @@ completely, set the keyid to "0". Default: the first private DSA key found is us
 sets the owner's key id for old-style pgp. To disable old-style pgp completely, set the keyid to 0. Default: the first private RSA key found is used.
 .It Ar DEFAULT action
 specifies the action to be taken for unspecified recipient addresses.
-See the next paragraph for an explanation of the 
+See the next paragraphs for an explanation of the 
 .Ar action
 argument.
 .El
@@ -209,12 +207,24 @@ argument.
 All lines not starting with the pound sign 
 .Ql #
 or a recognized directive
-are interpreted as a perl regular expression followed by whitespace and an
-action keyword. The regular expression is applied to the email address
-of the recipient of the mail, and the action keyword describes how to
+are interpreted as a 
+.Xr perl 1 
+regular expression followed by whitespace and an
+action keyword. 
+.Pp
+The regular expressions are applied to the email address
+of the recipients of the mail, and the action keyword describes how to
 modify 
 .Nm kuvert Ns
-\&'s behavious for this recipient.
+\&'s behavious for a recipient.
+.Pp
+The regular expression has to be written without the bracketing 
+.Ql / Ns
+-characters.
+The regular expressions are evaluated case-insensitively,
+and in the order given in the configuration file. The first matching regexp
+ends the evaluation sequence.
+.Pp
 The default action is to do not encrypt or sign at all, so you should
 set a default that is reasonable for you by using the 
 .Ql DEFAULT
@@ -222,6 +232,20 @@ directive.
 .Pp
 The known action keywords are:
 .Bl -tag
+.It Ar none
+Send it as it is, do not sign or encrypt at all. The MIME structure of 
+the mail is not changed in whatever way before sending. 
+This is the default action. 
+.Pp
+This option is 
+.Em slightly special:
+An explicitly set action of 
+.Ql none
+is 
+.Em not affected or overridden 
+by any of the 
+.Ar -force
+options.
 .It Ar std
 Use just old-style pgp. If there is an old-style key known, encrypt and sign
 using this old-style key and the owner's old-style key, otherwise just sign
@@ -232,10 +256,6 @@ Use just new-style pgp, similar to the above.
 Never encrypt, just sign using the owner's old-style key.
 .It Ar ngsign
 Never encrypt, just sign using the owner's new-style key.
-.It Ar none
-Send it as it is, do not sign or encrypt at all. The MIME structure of 
-the mail is not changed in whatever way before sending. 
-This is the default action.
 .It Ar fallback
 Encrypt with new-style, old-style or just sign with new-style.
 If there is a new-style key of the recipient known, encrypt and sign with
@@ -244,12 +264,21 @@ key. Otherwise just sign with the owner's new-style key.
 .It Ar none-force
 Force no encryption/signing for all recipients of this mail.
 .It Ar fallback-force
-Force a fallback-type action for all recipients of this mail: encrypt and sign with new-style or old-style pgp if keys for 
-.Em all 
-recipients are available or sign with new-style pgp. Note that a mixture of
-old-style and new-style encryption is possible here.
+Force a fallback-type action for the recipients of this mail:
+ encrypt and sign with new-style or old-style pgp if keys for 
+.Em all affected
+recipients are available or sign with new-style pgp. Recipients with 
+an action set to 
+.Ql none
+are 
+.Em not affected 
+by fallback-force. Also note that a mixture of
+old-style and new-style encryption is possible with fallback-force.
 .It Ar ngsign-force "," stdsign-force
-Sign only for all recipients, with new-style or old style pgp respectively.
+Sign only for all affected recipients, with new-style or old style pgp respectively. Again recipients with action 
+.Ql none
+are 
+.Em not affected.
 .It Ar ng-force
 Encrypt and sign for all recipients of this mail if there is a new-style key
 available for all of them, otherwise just sign for all of them using
@@ -257,10 +286,18 @@ new-style pgp. The difference between this action
 and 
 .Ar fallback-force
 is that there's no mixing of old-style and new-style pgp possible here.
+Again recipients with action 
+.Ql none
+are 
+.Em not affected.
 .It Ar std-force
 like 
 .Ar ng-force ","
 but with old-style pgp.
+Again recipients with action 
+.Ql none
+are 
+.Em not affected.
 .El
 .Pp
 Additionally, you can specify an override for a single mail by
@@ -269,7 +306,9 @@ adding a header to the mail of the form
 where action is one of the action keywords just listed
 above. This override will be applied to all recipients of the given
 mail and will override all action specifications given in the configuration
-file. Before final sending an email
+file, except the explicit 
+.Ql none Ns
+s. Before final sending an email
 .Nm kuvert
 will remove
 any existing override header from the email.
@@ -281,7 +320,24 @@ and encrypted variants of the same mail to different recipients: You can
 either turn off encryption or signing completely, or use the maximum
 amount of privacy that is possible for a given set of recipients by checking
 for keys for everybody before deciding whether to encrypt or just sign.
-.Sy Please note: the first occurrence of a -force action overrides all possible other occurrences
+.Pp
+The special handling for 
+.Ql none
+oes break this paradigma a bit, but is
+necessary to make the 
+.Ar -force
+a safe choice for your 
+.Ql DEFAULT
+action: Otherwise 
+.Nm kuvert
+would send stuff signed or encrypted to recipients you know to be 
+completely unable/unwilling to accept signed or encrypted mail
+(like mail robots). Therefore these were made unaffected (and disregarded)
+by the 
+.Ar -force
+options.
+.Pp
+.Sy Please note: the first occurrence of a -force action overrides all possible other occurrences!
 .Sh FILES
 .Bl -tag
 .It Pa ~/.kuvert
