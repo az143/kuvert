@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.8 2002/01/02 06:39:34 az Exp az $
+#   $Id: kuvert,v 1.9 2002/01/02 06:42:48 az Exp az $
 #--
 
 use strict;
@@ -1408,15 +1408,6 @@ sub gpg_listkeys_norsa
 	    next;
 	}
 	
-	# ignore expired, revoked and other bad keys
-	if (defined $badcauses{$info[1]})
-	{
-	    &logit("ignoring DSA ".
-		   ($info[0] eq "pub"? "key 0x$info[4]":"uid 0x$lastkey")." reason: "
-		   .$badcauses{$info[1]});
-	    next;
-	}
-
 	# fixme lowprio: more general unquote
 	$info[9] =~ s/\\x3a/:/g; # re-insert colons, please
 
@@ -1442,6 +1433,14 @@ sub gpg_listkeys_norsa
 
 	    if ($name)
 	    {
+		# ignore expired, revoked and other bad keys
+		if (defined $badcauses{$info[1]})
+		{
+		    &logit("ignoring DSA key 0x$info[4], reason: "
+			   .$badcauses{$info[1]});
+		    next;
+		}
+
 		$ngkeys{$name}="0x$lastkey";
 		
 		&logit("got ngkey 0x$lastkey for $name")
@@ -1470,6 +1469,14 @@ sub gpg_listkeys_norsa
 	    {
 		if ($name)
 		{
+		    # ignore expired, revoked and other bad keys
+		    if (defined $badcauses{$info[1]})
+		    {
+			&logit("ignoring DSA uid $name for 0x$lastkey, "
+			       ."reason: ".$badcauses{$info[1]});
+			next;
+		    }
+
 		    $ngkeys{$name}="0x$lastkey";
 		    &logit("got ngkey (uid) 0x$lastkey for $name")
 			if ($debug);
@@ -1518,14 +1525,6 @@ sub gpg_listkeys_rsa
 	    next;
 	}
 
-	# ignore expired, revoked and other bad keys
-	if (defined $badcauses{$info[1]})
-	{
-	    &logit("ignoring RSA key 0x$info[4], reason: "
-		   .$badcauses{$info[1]});
-	    next;
-	}
-
 	# fixme lowprio: general unquote
 	$info[9] =~ s/\\x3a/:/g; # re-insert colons, please
 
@@ -1545,6 +1544,14 @@ sub gpg_listkeys_rsa
 	if ($info[0] eq "pub")
 	{
 	    $lastkey=$info[4];
+
+	    # ignore expired, revoked and other bad keys
+	    if (defined $badcauses{$info[1]})
+	    {
+		&logit("ignoring RSA key 0x$info[4], reason: "
+		       .$badcauses{$info[1]});
+		next;
+	    }
 	    
 	    if ($name)
 	    {
@@ -1576,6 +1583,15 @@ sub gpg_listkeys_rsa
 	    {
 		if ($name)
 		{
+
+		    # ignore expired, revoked and other bad keys
+		    if (defined $badcauses{$info[1]})
+		    {
+			&logit("ignoring RSA uid $name for 0x$lastkey, "
+			       ."reason: ".$badcauses{$info[1]});
+			next;
+		    }
+
 		    $stdkeys{$name}="0x$lastkey";
 		    &logit("got stdkey (uid) 0x$lastkey for $name")
 			if ($debug);
