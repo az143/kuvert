@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.21 2002/09/19 09:13:13 az Exp az $
+#   $Id: kuvert,v 1.22 2002/09/19 09:51:25 az Exp az $
 #--
 
 use strict;
@@ -546,8 +546,8 @@ sub sign_send
     $newent->head->mime_attr("content-Type.Micalg" => "pgp-$micalg");
 
     $newent->preamble(["This is a multi-part message in MIME format.\n",
-		       "It has been signed conforming to RFC2015.\n",
-		       "You'll need PGP or GPG to check the signature.\n"]);
+		       "It has been signed conforming to RFC3156.\n",
+		       "You'll need GPG or PGP to check the signature.\n"]);
 
     # add the passed entity as part
     $newent->add_part($ent);
@@ -704,7 +704,7 @@ sub handle_term
 # reread configuration file and keyrings
 sub handle_reload
 {
-    my (@tmp,$lastkey);
+    my (@tmp,$lastkey,$mtaopt);
 
     # get the list of special adresses and adress-regexps
     if (!open (F,$config))
@@ -763,6 +763,12 @@ sub handle_reload
 	    {
 		$client=$1;
 		logit("set client to $1") if ($options{"d"});
+		next;
+	    }
+	    if (/^MTA\s+(\S.+)\s*$/)
+	    {
+		$mtaopt=$1;
+		logit("set mta to $1") if ($options{"d"});
 		next;
 	    }
 	    if (/^SECRETONDEMAND\s+(\d)/)
@@ -888,13 +894,27 @@ sub handle_reload
 	logit("bad ng executable '$GPG' -- exiting");
 	die "bad ng executable '$GPG' -- exiting\n";
     }
+
     if ($use_pgp && ! -x $PGP)
     {
 	logit("bad std executable '$PGP' -- exiting");
 	die "bad std executable '$PGP' -- exiting\n";
     }
+
+    if ($mtaopt && $mtaopt =~ /^(\S+)/)
+    {
+	if (! -x $1)
+	{
+	    logit("bad MTA '$mtaopt' -- exiting");
+	    die "bad MTA '$mtaopt' -- exiting\n";
+	}
+	else
+	{
+	    $mta=$mtaopt;
+	}
+    }
     
-    if ($use_agent)
+    if ($use_agent)		
     {
 	foreach my $x ($client,$agent)
 	{
