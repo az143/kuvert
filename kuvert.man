@@ -153,7 +153,7 @@ Default: 0
 .It Ar MTA Pa path-and-args
 defines the Mail Transfer Agent 
 .Nm kuvert 
-should use. The MTA must support the flag 
+should use. The MTA must read the mail text from stdin, support the flag 
 .Fl t , 
 and also support multiple recipients given in separate arguments.
 Default: /usr/lib/sendmail -om -oi -oem
