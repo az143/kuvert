@@ -1,5 +1,5 @@
 /*
- * $Id: kuvert_mta_wrapper.c,v 1.5 2002/11/14 14:24:49 az Exp az $
+ * $Id: kuvert_mta_wrapper.c,v 1.6 2003/03/28 10:55:39 az Exp az $
  * 
  * this file is part of kuvert, a wrapper around your mta that
  * does pgp/gpg signing/signing+encrypting transparently, based
@@ -38,7 +38,7 @@
 #define BUFLEN 65536
 #define FALLBACKMTA "/usr/lib/sendmail"
 
-#define BAILOUT(a,...) {fprintf(stderr, "argv[0] " ##a "\n",__VA_ARGS__);syslog(LOG_ERR,a,__VA_ARGS__); exit(1);}
+#define BAILOUT(a,...) {fprintf(stderr,"%s: ",argv[0]); fprintf(stderr, a "\n",##__VA_ARGS__);syslog(LOG_ERR,a,##__VA_ARGS__); exit(1);}
 
 int main(int argc,char **argv)
 {
