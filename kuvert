@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.1 2001/11/06 12:53:15 az Exp az $
+#   $Id: kuvert,v 1.2 2001/11/06 13:00:27 az Exp az $
 #--
 
 use strict;
@@ -419,6 +419,17 @@ sub process_file
 	    push @recip_none,$tmp;
 	}
     }
+
+    # cry out loud if there is a problem with the submitted mail 
+    # and no recipients were distinguishable...
+    # happens sometimes, with mbox-style 'From bla' lines in the headers...
+    if (!@recip_crypt_ng && !@recip_crypt_std && !@recip_sign_ng
+	&& !@recip_sign_std && !@recip_none)
+    {
+	return "no recipients found! header seems to be garbled.";
+    }
+
+
     # if there are recipients in recip_none, send the message to them
     # without any further action
     if (@recip_none)
@@ -433,7 +444,8 @@ sub process_file
 	push @sent,@recip_none;
     }
 
-    # shortcut if no other recipients are given
+    # shortcut if just recipients without crypt/sign
+    # and no other recipients are given
     return 0
 	if (!@recip_sign_std && !@recip_sign_ng
 	    && !@recip_crypt_std && !@recip_crypt_ng);
