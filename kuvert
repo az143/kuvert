@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.17 2002/03/05 13:18:49 az Exp az $
+#   $Id: kuvert,v 1.18 2002/04/25 14:31:58 az Exp az $
 #--
 
 use strict;
@@ -1839,16 +1839,16 @@ sub findaction
 	if ($force eq "std")
 	{
 	    # downgrade to sign if not all keys a/v
-	    $force="std-sign" if (grep(!exists $stdkeys{$_}, @affected));
+	    $force="stdsign" if (grep(!exists $stdkeys{$_}, @affected));
 	}
 	elsif ($force eq "ng")
 	{
-	    $force="ng-sign" if (grep(!exists $ngkeys{$_}, @affected));
+	    $force="ngsign" if (grep(!exists $ngkeys{$_}, @affected));
 	}
 	elsif ($force eq "fallback")
 	{
-	    # fallback-logic: ng-crypt or std-crypt, otherwise ng-sign
-	    # -force: ng- or std-crypt for all, otherwise ng-sign
+	    # fallback-logic: ng-crypt or std-crypt, otherwise ngsign
+	    # -force: ng- or std-crypt for all, otherwise ngsign
 	    $force="ngsign" 	
 		if (grep(!exists $ngkeys{$_} 
 			 && !exists $stdkeys{$_}, @affected));
