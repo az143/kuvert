@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.1 2003/01/12 15:21:03 az Exp az $
+#   $Id: kuvert,v 2.2 2003/01/15 15:03:03 az Exp az $
 #--
 
 use strict;
@@ -445,7 +445,7 @@ sub sign_send
     }
     # attach the signature
     $newent->attach(Type => "application/pgp-signature",
-		    Path => "output",
+		    Path => "$output",
 		    Filename => undef,
 		    Disposition => "inline",
 		    Encoding => "7bit");
@@ -1145,7 +1145,7 @@ sub sign_encrypt
 	}
 	else
 	{
-	    $cmd.="|$config{gpgpath} -q -t --batch --armor --passphrase-fd 0 --status-fd 1 --default-key";
+	    $cmd.="|$config{gpgpath} -q -t --batch --armor --detach-sign --passphrase-fd 0 --status-fd 1 --default-key";
 	    if ($type eq "std")
 	    {
 		$cmd.=" $config{stdkey} --rfc1991 --cipher-algo idea --digest-algo md5 --compress-algo 1";
@@ -1420,13 +1420,19 @@ sub logit
 	# logfile is opened with autoflush set to 1, 
 	# so no extra flushing needed
 	# we're more or less emulating the syslog format here...
-	map { print $config{logfh} (scalar(localtime)." $progname\[$$\] $_\n"); } (@lotsaoutput);
+	foreach (@lotsaoutput)
+	{
+	    print { $config{logfh} } scalar(localtime)." $progname\[$$\] $_\n";
+	}
     }
     else
     {
 	setlogsock('unix');
 	openlog($progname,"pid,cons","mail");
-	map { syslog("notice",$_); } (@lotsaoutput);
+	foreach (@lotsaoutput)
+	{
+	    syslog("notice",$_);
+	}
 	closelog;
     }
 }
