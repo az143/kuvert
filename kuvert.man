@@ -1,0 +1,201 @@
+.Dd November 11, 2001
+.Dt KUVERT 1
+.Os Unix
+.Sh NAME
+kuvert \- automatically sign and/or encrypt mail based on the recipients
+.Sh SYNOPSIS
+.Nm kuvert
+.Op Fl d
+.Op Fl r
+.Op Fl k
+.Sh DESCRIPTION
+.Xr kuvert 1
+reads mails from its queue, analyzes the recipients, decides to whom
+it should encrypt and/or sign the mail using the PGP-MIME framework
+defined in RFC2015 and sends the mail using your real MTA. kuvert can use
+both old-style 2.x pgp and modern gnupg at the same time, or can
+coerce gnupg into producing pgp-2.x-compatible signatures/encrypted data.
+.Pp
+The mail submission into the queue is usually done by
+.Xr kuvert_mta_wrapper "1".
+.Pp
+The option 
+.Op Fl r
+causes an already running kuvert process to reload the configuration file.
+.Pp
+The option
+.Op Fl d
+activates debugging output to syslog. 
+kuvert does not fork when in debugging mode and processes just the
+first mail in the queue, after which it terminates.
+.Pp
+The option
+.Op Fl k
+makes kuvert kill an already running kuvert process.
+.Pp
+At startup kuvert reads the keyring(s) and the config file (if available),
+then usually forks and runs the queue once every 60 seconds.
+Whenever there is a file with a name consisting only of digits in the
+queue, kuvert will parse the mime structure into a temporary directory using 
+.Xr MIME::Parser "3pm".
+.Pp
+kuvert then decides whether the mail shall be left as is, clear-text signed
+or signed and encrypted according to RFC2015.
+This decision is done independently for every recipient of the
+mail and works as follows: 
+.Bl -bullet
+.It
+If a public key of the recipient is known, sign and encrypt.
+.It 
+If no public key of the recipient is known, just sign.
+.El
+.Pp
+There are some options governing or overriding this basic setup, see
+the section
+.Sx Configuration
+for details.
+.Pp
+Please note that kuvert uses the "From:" and "Cc:" headers to determine
+the recipients. Additionally, if there is a  "Resend-To:"
+header, kuvert will do no signing/encryption and send the mail just as it
+is to the recipients indicated in the "Resend-To:" header.
+.Pp
+Afterwards the parsed MIME entity is amended with the signature or
+replaced with the encrypted data and is sent off using the MTA.
+The temporary directory is cleaned and kuvert processes either a 
+next message or waits for new messages.
+.Pp
+If there are problems, kuvert renames the current message to 
+".number" and sends an error message back to the sender.
+.Sh CONFIGURATION
+kuvert allows for configuration with a configuration file
+~/.kuvert. This file is read at startup or whenever you have kuvert 
+reread the files using 
+.Op Fl "r".
+Empty lines and lines starting with
+"#" are ignored, as well as lines containing directives kuvert can 
+not interpret. 
+.Pp
+Directives can either be:
+.Bl -bullet
+.It
+a directive name followed by whitespace and then a value,
+.It 
+or a regular expression matching an email address, followed by whitespace and an action keyword. The regular expression may be any regular expression 
+.Xr perl 1
+supports, but has to be written without the bracketing "/"-characters.
+.El
+.Pp
+The list of directives kuvert understands:
+.Bl -tag
+.It Li PGPPATH path
+defines the old-style compatible pgp executable to be used.
+Default: /usr/bin/pgp
+.It Li GPGPATH path
+defines the gnupg-compatible new-style pgp executable to be used.
+Default: /usr/bin/gpg
+.It Li USEPGP number
+if number is not 0, kuvert will use the old-style pgp executable to generate 
+old-style encryption/signatures. If it is 0, kuvert will use gpg in a 
+compatibility mode to produce the old-style stuff. Please note: gpg needs
+the gnupg-extensions rsa and idea for this compatibility mode.
+.It Li AGENTPATH path
+defines the quintuple-agent binary (see 
+.Xr q-agent "1") to be used, if available. Default: none
+.It Li CLIENTPATH path
+defines the quintuple-client binary (see 
+.Xr q-client "1") to be used, if available. Default: none
+.It Li SECRETONDEMAND number
+if 1 and if agent and client are available, kuvert will ask for the
+key passphrases on demand, just when signing. If one of these requirements
+is not given, kuvert will ask for the passphrases at startup and will store
+them itself. Default: 0
+.It Li ALWAYSTRUST number
+if 1, add the alwaystrust parameter to gpg's invocation. see 
+.Xr gpg "1" for details about this parameter. Default: 0
+.It Li LOGFILE path
+sets the file kuvert logs its actions to. The logs are appended to that
+file. Default: kuvert usually logs to syslog.
+.It Li QUEUEDIR path
+sets the directory where kuvert_mta_wrapper and kuvert put the queue of
+mails to be processed. Default: ~/.kuvert_queue
+.It Li TEMPDIR path
+sets the directory kuvert uses for temporary storage of the parts of the
+parsed MIME entity. 
+Attention: This directory is cleaned after every mail handled and every file
+in there is removed! Default: /tmp/kuvert.<uid>.<pid>.
+.It Li NGKEY keyid
+sets the owner's key id for new-style pgp/gpg. To disable new-style pgp/gpg
+completely, set the keyid to "0". Default: the first private RSA key found is used.
+.It Li STDKEY keyid
+sets the owner's key id for old-style pgp. To disable old-style pgp completely, set the keyid to "0". Default: the first private DSA key found is used.
+.It Li DEFAULT action
+specifies the action to be taken for unspecified recipient addresses.
+See next paragraph for an explanation of the action argument.
+.El
+.Pp
+All lines not starting with the pound sign or a recognized directive
+are interpreted as a perl regular expression followed by whitespace and an
+action keyword. The regular expression is applied to the email address
+of the recipient of the mail, and the action keyword describes how to
+modify kuvert's behavious for this recipient.
+The default action is to do not encrypt or sign at all, so you should
+set a default that is reasonable for you by using the DEFAULT directive.
+.Pp
+The known action keywords are:
+.Bl -tag
+.It Li std
+Use just old-style pgp. If there is an old-style key known, encrypt and sign
+using this old-style key and the owner's old-style key, otherwise just sign
+using the owner's old-style key.
+.It Li ng
+Use just new-style pgp, similar to the above.
+.It Li stdsign
+Never encrypt, just sign using the owner's old-style key.
+.It Li ngsign
+Never encrypt, just sign using the owner's new-style key.
+.It Li none
+Send it as it is, do not sign or encrypt at all. The MIME structure of 
+the mail is not changed in whatever way before sending. 
+This is the default action.
+.It Li fallback
+Encrypt with new-style, old-style or just sign with new-style.
+If there is a new-style key of the recipient known, encrypt and sign with
+this key, else if there is an old-style key, encrypt and sign with this
+key. Otherwise just sign with the owner's new-style key.
+.El
+.Pp
+Additionally, you can specify an override for a single mail by
+adding a header to the mail of the form
+"X-Kuvert: action" where action is one of the action keywords just listed
+above. This override will be applied to all recipients of the given
+mail and will override all action specifications given in the configuration
+file. Before final sending an email kuvert will remove
+any existing override header from the email.
+.Sh FILES
+.Bl -tag
+.It Pa ~/.kuvert
+configuration file for kuvert and 
+.Xr kuvert_mta_wrapper "1".
+.It Pa ~/.kuvert_queue
+the default queue directory for 
+.Xr kuvert "1" if the configuration file does not specify an alternative.
+.It Pa /tmp/kuvert.pid.<uid>
+holds the pid of a running kuvert process.
+.El
+.Sh SEE ALSO
+.Xr kuvert_mta_wrapper "1",
+.Xr q-agent 1
+.Sh AUTHORS
+.An Alexander Zangerl <az@snafu.priv.at>
+.Sh BUGS
+The MTA to be used is set in the program itself.
+Currently kuvert needs something 
+.Xr sendmail "1"-like in /usr/lib/sendmail that understands 
+.Op Fl t
+.Op Fl om
+.Op Fl oi
+and
+.Op Fl "oem".
+.Pp
+Bcc: is not interpreted by kuvert at the moment.
