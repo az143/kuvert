@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.6 2003/02/08 13:08:06 az Exp az $
+#   $Id: kuvert,v 2.7 2003/02/08 13:09:39 az Exp az $
 #--
 
 use strict;
@@ -44,7 +44,7 @@ my $rcfile="$home/.kuvert";
 my (%config,@overrides,%keys);
 # the passphrases are stored here if agent is not a/v
 my %secrets=();
-my $debug=0;
+my ($debug,$barfmail);
 my @detailederror=();
 
 sub main
@@ -52,15 +52,15 @@ sub main
     my %options;
     my $pidf=($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp")."/kuvert.pid.$<";
 
-    if (!getopts("dkrnv",\%options) || @ARGV)
+    if (!getopts("dkrnvb",\%options) || @ARGV)
     {
-	print "usage: $progname [-n] [-d] [-v] | [-k] | [-r] 
+	die "usage: $progname [-n] [-d] [-v] [-b]| [-k] | [-r] 
 -k: kill running $progname
 -d: debug mode
 -r: reload keyrings and configfile
 -n don't fork
--v: output version and exit";
-	exit 1;
+-v: output version and exit
+-b: complain via mail when dying\n";
     }
     
     if ($options{'v'})
@@ -70,6 +70,7 @@ sub main
     }
     
     $debug=1 if ($options{"d"});
+    $barfmail=1 if ($options{"b"});
 
     # kill a already running process
     # TERM for kill or HUP for rereading
@@ -78,37 +79,37 @@ sub main
 	my $pid;
 	my $sig=($options{"r"}?'USR1':'TERM');
 
-	open(PIDF,"$pidf") || &bailout("cant open $pidf: $!");
+	open(PIDF,"$pidf") || &bailout("cant open $pidf: $! -- exiting");
 	$pid=<PIDF>;
 	close(PIDF);
 	chomp $pid;
 
-	&bailout("no valid pid found, cant kill any process.")
+	&bailout("no valid pid found, cant kill any process -- exiting")
 	    if (!$pid);
-	&bailout("cant kill -$sig $pid: $!")
+	&bailout("cant kill -$sig $pid: $! -- exiting")
 	    if (!kill $sig, $pid);
 	unlink $pidf if ($options{"k"});
 	exit 0;
     }
 
-    &bailout("no configuration file \"$rcfile\", can't start!")
+    &bailout("no configuration file \"$rcfile\" -- exiting")
 	if (! -r $rcfile);
 
     # retain content of pidf, in case we cant lock it 
     if (-f "$pidf")			
     {
-	open(PIDF,"+<$pidf") || &bailout("cant open <+$pidf: $!");
+	open(PIDF,"+<$pidf") || &bailout("cant open <+$pidf: $! -- exiting");
     }
     else
     {
-	open(PIDF,">$pidf") || &bailout("cant open >$pidf: $!");
+	open(PIDF,">$pidf") || &bailout("cant open >$pidf: $! -- exiting");
     }
     my $other=<PIDF>;
     chomp $other;
-    seek(PIDF,0,'SEEK_SET');
     logit("there seems to be another instance with PID $other") if ($other);
-    &bailout("cant lock $pidf ($!), exiting.")
+    &bailout("cant lock $pidf ($!) -- exiting.")
 	if (!flock(PIDF,LOCK_NB|LOCK_EX));
+    seek(PIDF,0,'SEEK_SET');
 
     logit("$progname version $version starting");
 
@@ -132,7 +133,7 @@ sub main
 	    # start your own agent process
 	    # and remember its pid
 	    $config{private_agent}=open(SOCKETNAME,"-|");
-	    bailout("cant fork agent: $!") 
+	    bailout("cant fork agent: $! -- exiting") 
 		if (!defined $config{private_agent});
 	    if ($config{private_agent})	# original process
 	    {
@@ -152,7 +153,7 @@ sub main
 	    {
 		# the child that should exec the quintuple-agent
 		exec "$config{agentpath}"
-		    || &bailout("cant exec $config{agentpath}: $!");
+		    || &bailout("cant exec $config{agentpath}: $! -- exiting");
 	    }
 	}
     }
@@ -170,7 +171,7 @@ sub main
     {
 	my $res=fork;
 
-	&bailout("fork failed: $!")
+	&bailout("fork failed: $! -- exiting")
 	    if ($res == -1);
 	exit 0 if ($res);
     }
@@ -193,7 +194,7 @@ sub main
     # the main loop, left only via signal handler handle_term
     while (1)
     {
-	&bailout("cant open $config{queuedir}: $!")
+	&bailout("cant open $config{queuedir}: $! -- exiting")
 	    if (!opendir(D,"$config{queuedir}"));
 	
 	my $file;
@@ -220,7 +221,7 @@ sub main
 		chomp $@;
 		
 		rename("$config{queuedir}/$file","$config{queuedir}/.$file")
-		    || &bailout("cant rename $config{queuedir}/$file: $!");
+		    || &bailout("cant rename $config{queuedir}/$file: $! -- exiting");
 		logit("problem \"$@\" while processing $file,"
 		      ." left as \".$file\".\n");
 		send_bounce($@,$file);
@@ -229,13 +230,13 @@ sub main
 	    {
 		logit("done with file $file");
 		unlink("$config{queuedir}/$file")
-		    || &bailout("cant unlink $config{queuedir}/$file: $!");
+		    || &bailout("cant unlink $config{queuedir}/$file: $! -- exiting");
 	    }
 	    # and clean up the cruft left behind, please!
 	    cleanup("$config{tempdir}",0);
 
 	    # unlock the file
-	    bailout("problem unlocking $config{queuedir}/$file: $!")
+	    bailout("problem unlocking $config{queuedir}/$file: $! -- exiting")
 		if (!flock(FH,LOCK_UN));
 	    close(FH);
 	}
@@ -798,24 +799,24 @@ sub read_config
     # default settings
     my $defaction="none";
     my %newconf=(ngkey=>undef,
-	      stdkey=>undef,
-	      pgppath=>"/usr/bin/pgp",
-	      gpgpath=>"/usr/bin/gpg",
-	      usepgp=>0,
-	      use_agent=>0,
-	      private_agent=>0,
-	      clientpath=>undef,
-	      agentpath=>undef,
-	      mta=>"/usr/lib/sendmail -om -oi -oem",
-	      secretondemand=>0,
-	      alwaystrust=>0,
-	      interval=>60,
-	      tempdir=>($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp")."/kuvert.$username.$$",
-	      queuedir=>"$home/.kuvert_queue",
-	      logfile=>undef,
-	      logfh=>undef);
+		 stdkey=>undef,
+		 pgppath=>"/usr/bin/pgp",
+		 gpgpath=>"/usr/bin/gpg",
+		 usepgp=>0,
+		 use_agent=>0,
+		 private_agent=>0,
+		 clientpath=>undef,
+		 agentpath=>undef,
+		 mta=>"/usr/lib/sendmail -om -oi -oem",
+		 secretondemand=>0,
+		 alwaystrust=>0,
+		 interval=>60,
+		 tempdir=>($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp")."/kuvert.$username.$$",
+		 queuedir=>"$home/.kuvert_queue",
+		 logfile=>undef,
+		 logfh=>undef);
     
-    &bailout("cant open $rcfile: $!")
+    &bailout("cant open $rcfile: $! -- exiting")
 	if (!open (F,$rcfile));
     logit("reading config file");
     while (<F>)
@@ -850,12 +851,12 @@ sub read_config
 	    }
 	    else
 	    {
-		&bailout("bad config entry \"$_\"");
+		&bailout("bad config entry \"$_\" -- exiting");
 	    }
 	}
 	else
 	{
-	    &bailout("bad config entry \"$_\"");
+	    &bailout("bad config entry \"$_\" -- exiting");
 	}
     }
     close F;
@@ -869,17 +870,17 @@ sub read_config
     if (!-d $newconf{queuedir})
     {
 	unlink "$newconf{queuedir}";
-	&bailout("cant mkdir $newconf{queuedir}: $!")
+	&bailout("cant mkdir $newconf{queuedir}: $! -- exiting")
 	    if (!mkdir($newconf{queuedir},0700));
     }
     # check queuedir owner & perm
     elsif ((stat($newconf{queuedir}))[4] != $<)
     {
-	&bailout("$newconf{queuedir} is not owned by you - refusing to run");
+	&bailout("$newconf{queuedir} is not owned by you  -- exiting");
     }
     elsif ((stat($newconf{queuedir}))[2] & 0777 != 0700)
     {
-	&bailout("$newconf{queuedir} does not have mode 0700 - refusing to run");
+	&bailout("$newconf{queuedir} does not have mode 0700 -- exiting");
     }
     
     # make tempdir
@@ -888,16 +889,16 @@ sub read_config
 	unlink "$newconf{tempdir}";
 	if (!mkdir($newconf{tempdir},0700))
 	{
-	    &bailout("cant mkdir $newconf{tempdir}: $!");
+	    &bailout("cant mkdir $newconf{tempdir}: $! -- exiting");
 	}
     }
     elsif ((stat($newconf{tempdir}))[4] != $<)
     {
-	&bailout("$newconf{tempdir} is not owned by you - refusing to run");
+	&bailout("$newconf{tempdir} is not owned by you -- exiting");
     }
     elsif ((stat($newconf{tempdir}))[2]&0777 != 0700)
     {
-	&bailout("$newconf{tempdir} does not have mode 0700 - refusing to run");
+	&bailout("$newconf{tempdir} does not have mode 0700 -- exiting");
     }
 
     # close old logfile if there is one
@@ -906,7 +907,7 @@ sub read_config
     
     if ($newconf{logfile})
     {
-	&bailout("cant open logfile $newconf{logfile}: $!")
+	&bailout("cant open logfile $newconf{logfile}: $! -- exiting")
 	    if (!open($newconf{logfh},">>$newconf{logfile}"));
 	$newconf{logfh}->autoflush(1);
     }
@@ -935,11 +936,11 @@ sub read_config
     if ($newconf{ngkey})
     {
 	my $res=0xffff & system("$newconf{gpgpath} -q --batch --list-secret-keys --with-colons $newconf{ngkey} >$newconf{tempdir}/subproc 2>&1");
-	bailout("bad ngkey spec '$newconf{ngkey}'","$newconf{tempdir}/subproc") if ($res);
+	bailout("bad ngkey spec '$newconf{ngkey}' -- exiting","$newconf{tempdir}/subproc") if ($res);
     }
     elsif (!defined $newconf{ngkey})
     {
-	open(F,"$newconf{gpgpath} -q --batch --list-secret-keys --with-colons 2>$newconf{tempdir}/subproc |") || bailout("cant fork $newconf{gpgpath} to list sec keys: $!");
+	open(F,"$newconf{gpgpath} -q --batch --list-secret-keys --with-colons 2>$newconf{tempdir}/subproc |") || bailout("cant fork $newconf{gpgpath} to list sec keys: $! -- exiting");
 	while (<F>)
 	{
 	    my @list=split(/:/);
@@ -950,8 +951,8 @@ sub read_config
 	    last;
 	}
 	close F;
-	bailout("error running $newconf{gpgpath}: $?","$newconf{tempdir}/subproc") if ($?);
-	bailout("could not find ngkey") if (!$newconf{ngkey});
+	bailout("error running $newconf{gpgpath}: $? -- exiting","$newconf{tempdir}/subproc") if ($?);
+	bailout("could not find ngkey -- exiting") if (!$newconf{ngkey});
     }
 
     if ($newconf{stdkey})
@@ -959,12 +960,12 @@ sub read_config
 	if ($newconf{usepgp})
 	{
 	    my $res=0xffff & system("$newconf{pgppath} -kv $newconf{stdkey} $home/.pgp/secring.pgp >$newconf{tempdir}/subproc 2>&1");
-	bailout("bad stdkey spec \"$newconf{stdkey}\"","$newconf{tempdir}/subproc") if ($res);
+	bailout("bad stdkey spec \"$newconf{stdkey}\" -- exiting","$newconf{tempdir}/subproc") if ($res);
 	}
 	else
 	{
 	    my $res=0xffff & system("$newconf{gpgpath} -q --batch --list-secret-keys --with-colons $newconf{stdkey} >$newconf{tempdir}/subproc 2>&1");
-	    bailout("bad stdkey spec \"$newconf{stdkey}\"","$newconf{tempdir}/subproc")
+	    bailout("bad stdkey spec \"$newconf{stdkey}\" -- exiting","$newconf{tempdir}/subproc")
 		if ($res);
 	}
     }
@@ -973,7 +974,7 @@ sub read_config
 	if ($newconf{usepgp})
 	{
 	    open(F,"$newconf{pgppath} -kv $home/.pgp/secring.pgp 2>$newconf{tempdir}/subproc |") 
-		|| bailout("cant fork $newconf{pgppath} to list sec keys: $!");
+		|| bailout("cant fork $newconf{pgppath} to list sec keys: $! -- exiting");
 	    while (<F>)
 	    {
 		if (/^sec\s+\d+\/(\S+)\s+/)
@@ -984,13 +985,13 @@ sub read_config
 		}
 	    }
 	    close F;
-	    bailout("error running $newconf{pgppath}: $?","$newconf{tempdir}/subproc")
+	    bailout("error running $newconf{pgppath}: $? -- exiting","$newconf{tempdir}/subproc")
 		if ($?);
 	}
 	else
 	{
 	    open(F,"$newconf{gpgpath} -q --batch --list-secret-keys --with-colons 2>$newconf{tempdir}/subproc|")
-		|| bailout("cant run $newconf{gpgpath} to list sec keys: $!\n","$newconf{tempdir}/subproc");
+		|| bailout("cant run $newconf{gpgpath} to list sec keys: $! -- exiting","$newconf{tempdir}/subproc");
 	    while (<F>)
 	    {
 		my @list=split(/:/);
@@ -1001,18 +1002,18 @@ sub read_config
 		last;
 	    }
 	    close F;
-	    bailout("error running $newconf{gpgpath}: $?","$newconf{tempdir}/subproc")
+	    bailout("error running $newconf{gpgpath}: $? -- exiting","$newconf{tempdir}/subproc")
 		if ($?);
 	}
-	bailout("could not find stdkey") if (!$newconf{stdkey});
+	bailout("could not find stdkey -- exiting") if (!$newconf{stdkey});
     } 
 
     # finally make sure that no action conflicts with the keys we may lack
-    bailout("no keys whatsoever a/v!") if (!$newconf{stdkey} && !$newconf{ngkey});
+    bailout("no keys whatsoever a/v! -- exiting") if (!$newconf{stdkey} && !$newconf{ngkey});
 
-    bailout("config specifies ng but no ng key a/v")
+    bailout("config specifies ng but no ng key a/v -- exiting")
 	if (!$newconf{ngkey} && grep($_->{action} =~ /^ng/, @over));
-    bailout("config specifies std but no std key a/v")
+    bailout("config specifies std but no std key a/v -- exiting")
 	if (!$newconf{stdkey} && grep($_->{action} =~ /^std/, @over));
 
 	
@@ -1059,7 +1060,7 @@ sub send_bounce
     my ($res,$file)=@_;
 
     open(F,"|$config{mta} $username") || 
-	bailout("cant fork $config{mta}: $!");
+	bailout("cant fork $config{mta}: $! -- exiting");
     print F "From: $username\nTo: $username\nSubject: $progname Mail Sending Failure\n\n"
 	."Your mail $config{queuedir}/$file could not be sent to some or all recipients.\n"
 	."The error message was:\n-----\n$res\n-----\n\n";
@@ -1071,7 +1072,7 @@ sub send_bounce
 	."If you wish to retry again for all original recipients, just rename the file back to\n"
 	."$config{queuedir}/$file or otherwise remove the backup file.\n";
     close F;
-    bailout("error running $config{mta}: $?") if ($?);
+    bailout("error running $config{mta}: $? -- exiting") if ($?);
 }
 
  
@@ -1409,15 +1410,42 @@ sub findaction
 
 # logging and dying with a message
 # does not return
+# if barfmail is set, then a mail with the log information is sent (message and detailfn-content)
 # args: the message to spit out, path to a file with details.
 # the details from the file are logged only, not printed in the die-message
 sub bailout
 {
     my ($msg,$detailfn)=@_;
 
+    if ($barfmail)
+    {
+	# i'd like to call bailout without looping.
+	my $oldbarfmail=$barfmail;
+	$barfmail=0;	
+	my @detailederror=();
+	if (open(DF,$detailfn))
+	{
+	    push @detailederror,<DF>;
+	    close DF;
+	}
+	
+	my $mta=$config{mta}||"/usr/lib/sendmail"; # this could run before the config is read
+	open (F,"|$mta $username") || 
+	    bailout("cant fork $mta: $!");
+	print F "From: $username\nTo: $username\nSubject: $progname General Failure\n\n"
+	    ."$progname has encountered a serious/fatal failure.\n\n"
+	    ."The error message was:\n-----\n$msg\n-----\n\n";
+	print F "Detailed error message:\n-----\n"
+	    .join("",@detailederror)."\n-----\n\n" if (@detailederror);
+	close F;
+	bailout("error running $mta: $?") if ($?);
+	$barfmail=$oldbarfmail;
+    }
+    
     logit($msg,$detailfn);
     die($msg."\n");
 }
+
 
 # log the msg(s) to syslog or the logfile
 # the detailed info is put into @detailederror
