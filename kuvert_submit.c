@@ -1,11 +1,11 @@
 /*
- * $Id: kuvert_mta_wrapper.c,v 1.4 2002/11/14 13:20:49 az Exp az $
+ * $Id: kuvert_mta_wrapper.c,v 1.5 2002/11/14 14:24:49 az Exp az $
  * 
  * this file is part of kuvert, a wrapper around your mta that
  * does pgp/gpg signing/signing+encrypting transparently, based
  * on the content of your public keyring(s) and your preferences.
  *
- * copyright (c) 1999-2002 Alexander Zangerl <az+kuvert@snafu.priv.at>
+ * copyright (c) 1999-2003 Alexander Zangerl <az+kuvert@snafu.priv.at>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
