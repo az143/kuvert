@@ -150,6 +150,12 @@ will use gpg in a
 compatibility mode to produce the old-style stuff. Please note: gpg needs
 the gnupg-extension gpg-idea for this compatibility mode.
 Default: 0
+.It Ar MTA Pa path-and-args
+defines the Mail Transfer Agent 
+.Nm kuvert 
+should use. The MTA must support the flag 
+.Fl t .
+Default: /usr/lib/sendmail -om -oi -oem
 .It Ar AGENTPATH Pa path
 defines the quintuple-agent binary (see 
 .Xr q-agent "1") to be used, if available. Default: none
