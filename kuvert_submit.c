@@ -1,5 +1,5 @@
 /*
- * $Id: kuvert_mta_wrapper.c,v 1.3 2001/11/06 13:22:28 az Exp az $
+ * $Id: kuvert_mta_wrapper.c,v 1.4 2002/11/14 13:20:49 az Exp az $
  * 
  * this file is part of kuvert, a wrapper around your mta that
  * does pgp/gpg signing/signing+encrypting transparently, based
@@ -234,18 +234,6 @@ int main(int argc,char **argv)
       BAILOUT("flock failed: %s\n",strerror(errno));
    }
 
-   /* now save argv in the first line for kuvert, zero-delimited.
-    i think that \0 should not be too common in commandlines for sendmail... */
-   for(c=0;c<argc;++c)
-   {
-      if (fputs(argv[c],out)==EOF)
-	 BAILOUT("fputs failed: %s",strerror(errno));
-      if (((c==argc-1)?fputs("\n",out):fputc(0,out))==EOF)
-	 BAILOUT("fputc/s failed: %s",strerror(errno));
-   }
-   if (fflush(out)==EOF)
-      BAILOUT("fflush failed: %s",strerror(errno));
-      
    /* and put the data there */
    do 
    {
