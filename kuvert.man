@@ -245,7 +245,7 @@ is
 .Em not affected or overridden 
 by any of the 
 .Ar -force
-options.
+options or by the override header.
 .It Ar std
 Use just old-style pgp. If there is an old-style key known, encrypt and sign
 using this old-style key and the owner's old-style key, otherwise just sign
