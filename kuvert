@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.16 2002/03/05 13:02:53 az Exp az $
+#   $Id: kuvert,v 1.17 2002/03/05 13:18:49 az Exp az $
 #--
 
 use strict;
@@ -311,12 +311,15 @@ sub process_file
     }
 
     # extract and delete instruction header
-    my $custom_conf=$in_ent->head->get($conf_header);
+    my $custom_conf=lc($in_ent->head->get($conf_header));
     $in_ent->head->delete($conf_header);
 
     # strip trailing and leading whitespace from the custom header
     $custom_conf =~ s/^\s*(\S*)\s*$/$1/;
-
+    
+    # check the custom header for validity
+    undef $custom_conf 	
+	unless ($custom_conf=~/^(none|std(sign)?|ng(sign)?|fallback)(-force)?$/);
     # extract a possible resend-request-header
     # if a/v, call $mta immediately
 
@@ -346,147 +349,29 @@ sub process_file
 
     my (@recip_none,@recip_sign_std,@recip_sign_ng,
 	@recip_crypt_std,@recip_crypt_ng,@recip_all);
-    # save all recipients, necessary for override-handling
-    map { push @recip_all, lc($_->address); }  Mail::Address->parse($in_ent->head->get("To"),
+    # get the recipients
+    # note: bcc handling is not implemented.
+    map { push @recip_all, lc($_->address); } Mail::Address->parse($in_ent->head->get("To"),
 								    $in_ent->head->get("Cc"));
-
-    # check if there is one with an override in there
-    # but only if there's no custom header already
-    if (!$custom_conf)
-    {
-	foreach (@recip_all)
-	{
-	    if (grep($_,@configkeys))
-	    {
-		if ($config{$_} =~ 
-		    /^((std|ng)(sign)?|none|fallback)-force$/)
-		{
-		    $custom_conf=$config{$_};
-		    logit("found override $custom_conf for $_");
-		    last;		# more than one override -> undefined...
-		}
-	    }
-	}
-    }
-    # handle -force options:
-    $custom_conf =~ s/^(none|stdsign|ngsign)-force$/$1/;
-
-    # fallback to signing if not all recipients have keys of any kind
-    if ($custom_conf eq "fallback-force")
-    {	
-	$custom_conf="fallback";
-	$custom_conf="ngsign" 	
-	    if (grep(!exists $ngkeys{$_} && !exists $stdkeys{$_}, @recip_all));
-    }
-    elsif ($custom_conf eq "ng-force")
-    {
-	$custom_conf="ng";
-	$custom_conf="ngsign"
-	    if (grep(!exists $ngkeys{$_}, @recip_all));
-    }
-    elsif ($custom_conf eq "std-force")
-    {
-	$custom_conf="std";
-	$custom_conf="stdsign"
-	    if (grep(!exists $stdkeys{$_}, @recip_all));
-    }
-
-    foreach my $tmp (@recip_all)
-    {
-	my $key="";
-	my $value="";
-
-	# if there is a custom configuration header,
-	# set its content for all the recipients
-	if ($custom_conf)
-	{
-	    $value=lc($custom_conf);
-	    logit("found custom conf header, set $tmp -> $value")
-		if ($options{"d"});
-	}
-	else
-	{
-	    # traverse the config an find first match
-	    foreach (@configkeys)
-	    {
-		if ($tmp =~ /$_/i)
-		{
-		    $key=$_;
-		    logit("addr $tmp matches special case $_ -> $config{$key}")
-			if ($options{"d"});
-		    last;
-		}
-	    }
-	}
-
-	# if we've got no config for this address,
-	# we use the default configuration, if a/v
-	# if there is no default config, we do not sign/crypt at all.
-	# if value is set, dont set the key!!
-	$key="default"
-	    if (!$key && !$value);
-
-	# try ng enc, then std enc, else ng sign
-	if (lc($config{$key}) eq "fallback"
-	    || ( $custom_conf && $value eq "fallback" ))
-	{
-	    if ($ngkeys{$tmp})
-	    {
-		push @recip_crypt_ng,$tmp;
-	    }
-	    elsif ($stdkeys{$tmp})
-	    {
-		push @recip_crypt_std,$tmp;
-	    }
-	    else
-	    {
-		push @recip_sign_ng,$tmp;
-	    }
-	}
-	elsif (lc($config{$key}) eq "ngsign"
-	       || ( $custom_conf && $value eq "ngsign" )) # ng, but signonly
-	{
-	    push @recip_sign_ng,$tmp;
-	}
-	elsif (lc($config{$key}) eq "ng"
-	       || ( $custom_conf && $value eq "ng" )) # ng-keys, but encr if possible
-	{
-	    my $ref=\@recip_sign_ng;
-
-	    $ref=\@recip_crypt_ng
-		if ($ngkeys{$tmp});
-
-	    push @$ref,$tmp;
-	}
-	elsif (lc($config{$key}) eq "stdsign"
-	       || ( $custom_conf && $value eq "stdsign" )) # std, but signonly
-	{
-	    push @recip_sign_std,$tmp;
-	}
-	elsif (lc($config{$key}) eq "std"
-	       || ( $custom_conf && $value eq "std")) # consider only std-keys
-	{
-	    my $ref=\@recip_sign_std;
-
-	    $ref=\@recip_crypt_std
-		if ($stdkeys{$tmp});
-	    push @$ref,$tmp;
-	}
-	else			# everything else means no sign/crypt at all
-	{
-	    push @recip_none,$tmp;
-	}
-    }
 
     # cry out loud if there is a problem with the submitted mail 
     # and no recipients were distinguishable...
     # happens sometimes, with mbox-style 'From bla' lines in the headers...
-    if (!@recip_crypt_ng && !@recip_crypt_std && !@recip_sign_ng
-	&& !@recip_sign_std && !@recip_none)
+    if (!@recip_all)
     {
 	return "no recipients found! the mail headers seem to be garbled.";
     }
 
+    # figure out what to do for specific recipients
+    my %actions=findaction($custom_conf,@recip_all);
+
+    # translate that into arrays
+    @recip_none=grep($actions{$_} eq "none",keys %actions);
+    @recip_sign_std=grep($actions{$_} eq "stdsign",keys %actions);
+    @recip_sign_ng=grep($actions{$_} eq "ngsign",keys %actions);
+    @recip_crypt_std=grep($actions{$_} eq "std",keys %actions);
+    @recip_crypt_ng=grep($actions{$_} eq "ng",keys %actions);
+    
 
     # if there are recipients in recip_none, send the message to them
     # without any further action
@@ -926,9 +811,17 @@ sub handle_reload
 
 	    if (/^(\S+)\s+(\S+)\s*$/)
 	    {
-		$config{lc($1)}=$2;
-		push @configkeys, lc($1);
-		logit("got conf $2 for $1") if ($options{"d"});
+		my ($key,$action)=(lc($1),lc($2));
+		if ($action=~/^(none|std(sign)?|ng(sign)?|fallback)(-force)?$/)
+		{
+		    $config{$key}=$action;
+		    push @configkeys, $key;
+		    logit("got conf $action for $key") if ($options{"d"});
+		}
+		else
+		{
+		    logit("ignoring bad action \"$action\" for $key");
+		}
 	    }
 	}
 	close F;
@@ -1889,7 +1782,108 @@ sub verify_passphrase
     exit 1;			# must not reach here
 }
 
-    
+
+# find the correct action for a given email address
+# input: addresses and custom-header
+# result: hash with address as key and action as value
+# the fallback and -force options are expanded into atoms, ie.
+# resulting actions are: ng, ngsign, std, stdsign, none.
+# note: ng and std means encryption here, no check for keys necessary anymore
+# fixme: uses globals stdkeys, ngkeys, options
+sub findaction    
+{
+    my ($custom,@addrs,@affected)=@_;
+    my (%actions,$addr);
+
+    # lookup addresses in config
+    foreach $addr (@addrs)
+    {
+	# go through the configkeys
+	foreach (@configkeys)
+	{
+	    if ($addr =~ /$_/i)
+	    {
+		$actions{$addr}=$config{$_};
+		logit("found directive: $addr -> $actions{$addr}")
+		    if ($options{"d"});
+		last;
+	    }
+	}
+	# custom set? then override the config except where action=none
+	if ($custom && $actions{$addr} ne "none")
+	{
+	    logit("custom conf header: overrides $addr -> $custom")
+		if ($options{"d"});
+	    $actions{$addr}=$custom;
+	    next;
+	}
+	# apply default if necessary
+	$actions{$addr}=$config{"default"} if (! exists $actions{$addr});
+    }
+
+    # now check the found actions: anyone with -force options?
+    foreach $addr (@addrs)
+    {
+	next if ($actions{$addr} !~ /^(\S+)-force$/);
+	my $force=$1;
+	logit("found force directive: $addr -> $actions{$addr}")
+	    if ($options{"d"});
+
+	# yuck, must find affected addresses: those with action=none
+	# have to be disregarded and unchanged.
+	
+	@affected = grep($actions{$_} ne "none",@addrs);
+
+	# (almost) unconditionally apply the simple force options:
+	# none,ngsign,stdsign; others need more logic
+	if ($force eq "std")
+	{
+	    # downgrade to sign if not all keys a/v
+	    $force="std-sign" if (grep(!exists $stdkeys{$_}, @affected));
+	}
+	elsif ($force eq "ng")
+	{
+	    $force="ng-sign" if (grep(!exists $ngkeys{$_}, @affected));
+	}
+	elsif ($force eq "fallback")
+	{
+	    # fallback-logic: ng-crypt or std-crypt, otherwise ng-sign
+	    # -force: ng- or std-crypt for all, otherwise ng-sign
+	    $force="ngsign" 	
+		if (grep(!exists $ngkeys{$_} 
+			 && !exists $stdkeys{$_}, @affected));
+	}
+
+	# apply forced action to the affected addresses
+	map { $actions{$_}=$force; } (@affected);	 
+	logit("final force directive: $force")
+	    if ($options{"d"});
+	# the first force-option wins, naturally.
+	last;
+    }
+
+    # finally check the actions for fallback, ng or std and expand that
+    foreach $addr (@addrs)
+    {
+	if ($actions{$addr} eq "fallback")
+	{
+	    ($ngkeys{$addr} && ($actions{$addr}="ng")) 
+		|| ($ngkeys{$addr} && ($actions{$addr}="std"))
+		|| ($actions{$addr}="ngsign");
+	}
+	elsif ($actions{$addr} eq "ng")
+	{
+	    $actions{$addr}="ngsign" if (!$ngkeys{$addr});
+	} 
+	elsif ($actions{$addr} eq "std")
+	{
+	    $actions{$addr}="stdsign" if (!$stdkeys{$addr});
+	} 
+	logit("final action: $addr -> $actions{$addr}") if ($options{"d"});
+    }
+    return %actions;
+}
+
     
 
     
