@@ -1,0 +1,55 @@
+this is kuvert, a wrapper around sendmail or other MTAs that
+does pgp/gpg signing/signing+encrypting transparently, based
+on the content of your public keyring(s) and your preferences.
+
+how to use kuvert in a nutshell: 
+--------------------------------
+
+on debian systems you may install just the kuvert package and
+the rest of the  installation will be taken care of automatically.
+
+on other systems you need to do the following:
+
+you need perl perl 5.004+, MIME-tools-4.124.tar.gz or later,
+MIME-Base64-2.11.tar.gz or later, and MailTools-1.13.tar.gz or later
+from your nearest CPAN archive and install them. get gpg and/or pgp2.x.
+optional: get robert bihlmeyer's quintuple-agent, compile and install it.
+
+run make, make install DESTDIR=/ as root
+-> kuvert, kuvert_mta_wrapper and the two manpages will be installed
+in /usr/bin and /usr/share/man/man1.
+
+read the manpages for kuvert(1) and kuvert_mta_wrapper(1), 
+configure kuvert and go on from there.
+
+(historical note: kuvert came into existence in 1996 as pgpmail and
+was used only privately until 99, when it was extended and renamed
+to guard. some of my friends started using this software, and in 
+2001 it was finally re-christened kuvert, extended even further
+and debianized.)
+
+please report bugs to me, Alexander Zangerl, <az@snafu.priv.at>.
+
+The original source can always be found at:
+	http://www.snafu.priv.at/kuvert/
+
+Copyright (C) 1999-2001  Alexander Zangerl
+
+  This program is free software; you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation; either version 2 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License with
+  the Debian GNU/Linux distribution in file /usr/share/common-licenses/GPL;
+  if not, write to the Free Software Foundation, Inc., 59 Temple Place,
+  Suite 330, Boston, MA  02111-1307  USA
+
+
+
+
