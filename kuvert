@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.12 2003/08/03 01:45:37 az Exp az $
+#   $Id: kuvert,v 2.13 2003/08/03 02:06:53 az Exp az $
 #--
 
 use strict;
@@ -542,11 +542,18 @@ sub send_entity
 {
     my ($ent,@args)=@_;
 
-    open(TOMTA,("|$config{mta} ".join(" ",@args)))
-	|| bailout("cant open pipe to $config{mta}: $!");
-    $ent->print(\*TOMTA);
-    close(TOMTA);
-    bailout("error running $config{mta}: $?") if ($?);
+    my $pid=open(TOMTA,"|-");
+    bailout("cant open pipe to $config{mta}: $!") if (!defined $pid);
+    if ($pid)
+    {
+	$ent->print(\*TOMTA);
+	close(TOMTA) || bailout("error talking to child $config{mta}: $?");
+    }
+    else
+    {
+	my @cmd=split(/\s+/,$config{mta});
+	exec(@cmd,@args) || bailout("error execing $cmd[0]: $!");
+    }
 }
 
 # remove temporary stuff left behind in directory $what
