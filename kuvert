@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.23 2002/09/19 14:58:21 az Exp az $
+#   $Id: kuvert,v 1.24 2002/09/19 16:25:46 az Exp az $
 #--
 
 use strict;
@@ -715,6 +715,8 @@ sub read_config
     
     logit("reading config file");
     %config=();
+    $config{default}='none';
+
     @configkeys=();
     while (<F>)
     {
@@ -833,49 +835,49 @@ sub read_config
 		logit("ignoring bad action \"$action\" for $key");
 	    }
 	}
+    }
 	
-	close F;
+    close F;
 
-	# generate queuedir if not existing
-	if (!-d $queuedir)
+    # generate queuedir if not existing
+    if (!-d $queuedir)
+    {
+	unlink "$queuedir";
+	&bailout("cant mkdir $queuedir: $!")
+	    if (!mkdir($queuedir,0700));
+    }
+    # check queuedir owner & perm
+    elsif ((stat($queuedir))[4] != $<)
+    {
+	&bailout("$queuedir is not owned by you - refusing to run");
+    }
+    elsif ((stat($queuedir))[2]&0777 != 0700)
+    {
+	&bailout("$queuedir does not have mode 0700 - refusing to run");
+    }
+    
+    # gen tempdir for storing mime-stuff
+    if (!-d $tempdir)
+    {
+	unlink "$tempdir";
+	if (!mkdir($tempdir,0700))
 	{
-	    unlink "$queuedir";
-	    &bailout("cant mkdir $queuedir: $!")
-		if (!mkdir($queuedir,0700));
-	}
-	# check queuedir owner & perm
-	elsif ((stat($queuedir))[4] != $<)
-	{
-	    &bailout("$queuedir is not owned by you - refusing to run");
-	}
-	elsif ((stat($queuedir))[2]&0777 != 0700)
-	{
-	    &bailout("$queuedir does not have mode 0700 - refusing to run");
-	}
-
-	# gen tempdir for storing mime-stuff
-	if (!-d $tempdir)
-	{
-	    unlink "$tempdir";
-	    if (!mkdir($tempdir,0700))
-	    {
-		&bailout("cant mkdir $tempdir: $!");
-	    }
-	}
-	elsif ((stat($tempdir))[4] != $<)
-	{
-	    &bailout("$tempdir is not owned by you - refusing to run");
-	}
-	elsif ((stat($tempdir))[2]&0777 != 0700)
-	{
-	    &bailout("$tempdir does not have mode 0700 - refusing to run");
+	    &bailout("cant mkdir $tempdir: $!");
 	}
     }
-
+    elsif ((stat($tempdir))[4] != $<)
+    {
+	&bailout("$tempdir is not owned by you - refusing to run");
+    }
+    elsif ((stat($tempdir))[2]&0777 != 0700)
+    {
+	&bailout("$tempdir does not have mode 0700 - refusing to run");
+    }
+    
     # consistency checks
     $use_agent=$client && $agent;
     $secret_on_demand=0 if (!$use_agent);
-
+    
     # sanity checks
     &bailout("bad ng executable '$GPG' -- exiting")
 	if (! -x $GPG);
