@@ -1,0 +1,1738 @@
+#!/usr/bin/perl
+#
+# this file is part of kuvert, a wrapper around sendmail that
+# does pgp/gpg signing/signing+encrypting transparently, based
+# on the content of your public keyring(s) and your preferences.
+#
+# copyright (c) 1999-2001 Alexander Zangerl <az@snafu.priv.at>
+#
+#   This program is free software; you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation; either version 2 of the License, or
+#   any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program; if not, write to the Free Software
+#   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+#
+#   $Id: guard,v 2.10 2001/09/21 00:01:16 az Exp $
+#--
+
+use strict;
+use Sys::Syslog qw(setlogsock openlog syslog closelog);
+use Fcntl qw(:flock);
+use Getopt::Std;
+
+use MIME::Parser;		# for parsing the mime-stream
+use Mail::Address;		# for parsing to and cc-headers
+
+use Time::Local;
+
+my %options;
+if (!getopts("dkr",\%options) || @ARGV)
+{
+    print "usage: $0 [-d] | [-k] | [-r] \n-k: kill running $0\n"
+	."-d: debug mode\n-r: reload keyrings and configfile\n";
+    exit 1;
+}
+
+# who are we gonna pretend to be today?
+my($name,$home)=(getpwuid($<))[0,7];
+
+# where is our in-queue
+my $queuedir="$home/.kuvert_queue";
+
+# which mta to use
+my $mta="/usr/lib/sendmail -om -oi -oee";
+
+# where to put temp files for parsing mime
+my $tempdir="/tmp/kuvert.$<.$$";
+# where to put pgp/gpg in- and output
+my $tempfile_in="input.tmp";
+my $tempfile_out="output.tmp";
+
+# interval to check the queue
+my $interval=60;		# seconds
+
+# where is the configuration file
+my $config="$home/.kuvert";
+
+# list of addresses and -regexps to be handles specially
+my %config=();
+my @configkeys=();
+
+# adresses and keyids
+my (%ngkeys,%stdkeys);
+
+# the name of program for logging
+my $progname="kuvert V1.0.0";
+
+# where to put the pid of the running process
+my $pidf="/tmp/kuvert.pid.$<";
+
+# header to check for bounce request
+# bounces are not signed or encrypted but simply passed to $mta
+my $resend_indicator="resent-to";
+
+# with this header one can override the configuration options wrt.
+# signing for all recipients of the current mail
+my $conf_header="x-kuvert";
+
+# pgp path
+my $PGP='/usr/bin/pgp';
+# gpg path
+my $GPG='/usr/bin/gpg';
+# cat
+my $CAT="/bin/cat";
+# quintuple-client path
+my $client;
+# quintuple-agent path and args
+my $agent;
+
+# the passphrases are stored here if agent support is switched off
+my %secrets=();
+
+# 0 if gpg should try to mimickry as pgp2
+# 0 means, that both keys are assumed to reside in one keyring
+my $use_pgp=0;
+
+# set this to 1 if this module should store the secrets with
+# secret-agent rather than storing them itself.
+my $use_agent=0;
+# whether we need a separate agent-process
+my $private_agent=0;
+
+# if use_agent:
+# set this to 0 if the secret should be loaded on demand by
+# client if possible: this demand asking works only if
+# $DISPLAY is set, so this option is ignored if no $DISPLAY is a/v
+# if not set, the secret is asked & stored when kuvert starts.
+my $secret_on_demand=0;
+
+# add --always-trust to the gpg-parameters: this makes gpg
+# encrypt to non fully trusted keys, too.
+my $alwaystrust=0;
+
+# set this to 1 for more verbose debugging output to syslog
+my $debug=0;
+
+# default keyid(s) for std and ng
+# not really needed if you run separate keyrings, but if you
+# want to run only gpg (in normal and "compat" mode),
+# you've got to specify your default key because you've got more than
+# one secret key in your secret keyring...
+my ($ng_defkey,$std_defkey);
+
+$debug=1 if ($options{"d"});
+
+# kill a already running process
+# TERM for kill or HUP for rereading
+if ($options{"k"} || $options{"r"})
+{
+    my $pid;
+    my $sig=($options{"r"}?'HUP':'TERM');
+
+    open(PIDF,"$pidf") || die "cant open $pidf: $!\n";
+    $pid=<PIDF>;
+    close(PIDF);
+    chomp $pid;
+
+    die "no valid pid found, cant kill any process.\n"
+	    if (!$pid);
+    if (!kill $sig, $pid)
+    {
+	die "cant kill -$sig $pid: $!\n";
+    }
+    unlink $pidf if ($options{"k"});
+    exit 0;
+}
+
+# and now for some real work...
+if (-f "$pidf")			# retain content of pidf, in case we cant lock it
+{
+    open(PIDF,"+<$pidf") || die "cant open <+$pidf: $!\n";
+}
+else
+{
+    open(PIDF,">$pidf") || die "cant open >$pidf: $!\n";
+}
+if (!flock(PIDF,LOCK_NB|LOCK_EX))
+{
+    logit("cant lock $pidf ($!), another process running?, exiting");
+    die "cant lock $pidf ($!), another process running?, exiting\n";
+}
+
+# get the list of known keys and the configuration-stuff,
+# setup the queuedir and tempdir
+# the hup-handler does this
+handle_hup();
+
+# cleanup tempdir
+my $res;
+if ($res=cleanup($tempdir,0))
+{
+    logit("cant clean $tempdir: $res");
+    die "cant clean $tempdir: $res\n";
+}
+
+# get the passphrase(s) and setup secret-agent if wanted
+# this has to be done before any fork, because the environment
+# vars for secret-agent must be retained
+$res=&get_verify_secrets;
+die "secrets could not be initialized properly: $res\n" if ($res);
+
+if (!$options{"d"})
+{
+    my $res=fork;
+
+    die "fork failed: $!\n"
+	if ($res == -1);
+    exit 0
+	if ($res);
+}
+
+# the lockfile is ours, lets write the current pid
+print PIDF "$$\n";
+PIDF->flush;
+truncate PIDF,tell(PIDF);	# and make sure there's nothing else in there...
+
+# install the hup-handler
+$SIG{'HUP'}=\&handle_hup;
+# and the termination-handler
+$SIG{'INT'}=\&handle_term;
+$SIG{'QUIT'}=\&handle_term;
+$SIG{'TERM'}=\&handle_term;
+
+# the main loop, left only via signal handler handle_term
+while (1)
+{
+    if (!opendir(D,"$queuedir"))
+    {
+	logit("cant open $queuedir: $!");
+	die "cant open $queuedir: $!";
+    }
+
+    my $file;
+    foreach $file (readdir(D))
+    {
+	my $res;
+
+	# dont try to handle any files starting with "."
+	next if ($file =~ /^\./);
+	# open the file
+	next if (!open(FH,"$queuedir/$file"));
+	# lock it if possible
+	if (!flock(FH,LOCK_NB|LOCK_EX))
+	{
+	    close(FH);
+	    logit("$file is locked, skipping.");
+	    next;
+	}
+
+	#ok, open & locked, let's proceed
+	logit("processing $file for $name");
+	$res=process_file(*FH,"$queuedir/$file");
+	if ($res)
+	{
+	    send_bounce($res,$file);
+	    logit("problem \"$res\" processing $file,"
+		  ." leaving as \".$file\".\n");
+	    $res=rename("$queuedir/$file","$queuedir/.$file");
+	}
+	else
+	{
+	    logit("done with file $file");
+	    $res=unlink("$queuedir/$file");
+	    logit("problem removing $queuedir/$file: $!")
+		if (!$res);
+	}
+
+	# and clean up the cruft left behind, please!
+	$res=&cleanup("$tempdir",0);
+	logit("problem cleaning $tempdir: $res")
+	    if ($res);
+
+	# unlock the file
+	logit("problem unlocking $queuedir/$file: $!")
+	    if (!flock(FH,LOCK_UN));
+	close(FH);
+    }
+    closedir(D);
+    sleep($interval);
+}
+
+# returns 0 if ok
+# stuff in the temp directory is removed by the main loop
+sub process_file
+{
+    my ($fh,$file)=@_;
+    my ($res);
+
+    my @sent;
+
+    my $parser = new MIME::Parser;
+
+    # set output to tempdir
+    $parser->output_dir($tempdir);
+    # everything less than 100k goes to core mem
+    $parser->output_to_core(100000);
+    # retain rfc1522-encoded headers, please
+    $parser->decode_headers(0);
+
+    my $in_ent = $parser->read(\$fh);
+
+    if (!$in_ent)
+    {
+	logit("could not parse MIME stream, last header was "
+	      .$parser->last_head);
+	return ("mail was not sent anywhere: could not parse MIME stream, "
+		."last header was ".$parser->last_head);
+    }
+
+    # extract and delete instruction header
+    my $custom_conf=$in_ent->head->get($conf_header);
+    $in_ent->head->delete($conf_header);
+
+    # strip trailing and leading whitespace from the custom header
+    $custom_conf =~ s/^\s*(\S*)\s*$/$1/;
+
+    # extract a possible resend-request-header
+    # if a/v, call $mta immediately
+
+    if ($custom_conf eq "none" || $in_ent->head->get($resend_indicator))
+    {
+	if ($custom_conf eq "none" )
+	{
+	    logit("all sign/encrypt disabled for this mail, calling $mta -t");
+	}
+	else
+	{
+	    logit("resending mail, sign/encrypt disabled, calling $mta -t");
+	}
+	# we do not send the original file here because this file possibly
+	# holds the instruction header...
+	$res=&send_entity($in_ent,"-t");
+	$in_ent->purge;
+	if ($res)
+	{
+	    return "mail was not sent to anybody: $res";
+	}
+	else
+	{
+	    return 0;
+	}
+    }
+
+    my (@recip_none,@recip_sign_std,@recip_sign_ng,
+	@recip_crypt_std,@recip_crypt_ng);
+
+    foreach (Mail::Address->parse($in_ent->head->get("To"),
+				       $in_ent->head->get("Cc")))
+    {
+	my $tmp=lc($_->address);
+	my $key="";
+	my $value="";
+
+	# if there is a custom configuration header,
+	# set its content for all the recipients
+	if ($custom_conf)
+	{
+	    $value=lc($custom_conf);
+	    logit("found custom conf header, set $tmp -> $value")
+		if ($options{"d"});
+	}
+	else
+	{
+	    # traverse the config an find first match
+	    foreach (@configkeys)
+	    {
+		if ($tmp =~ /$_/i)
+		{
+		    $key=$_;
+		    logit("addr $tmp matches special case $_ -> $config{$key}")
+			if ($options{"d"});
+		    last;
+		}
+	    }
+	}
+
+	# if we've got no config for this address,
+	# we use the default configuration, if a/v
+	# if there is no default config, we do not sign/crypt at all.
+	# if value is set, dont set the key!!
+	$key="default"
+	    if (!$key && !$value);
+
+	# try ng enc, then std enc, else ng sign
+	if (lc($config{$key}) eq "fallback"
+	    || ( $custom_conf && $value eq "fallback" ))
+	{
+	    if ($ngkeys{$tmp})
+	    {
+		push @recip_crypt_ng,$tmp;
+	    }
+	    elsif ($stdkeys{$tmp})
+	    {
+		push @recip_crypt_std,$tmp;
+	    }
+	    else
+	    {
+		push @recip_sign_ng,$tmp;
+	    }
+	}
+	elsif (lc($config{$key}) eq "ngsign"
+	       || ( $custom_conf && $value eq "ngsign" )) # ng, but signonly
+	{
+	    push @recip_sign_ng,$tmp;
+	}
+	elsif (lc($config{$key}) eq "ng"
+	       || ( $custom_conf && $value eq "ng" )) # ng-keys, but encr if possible
+	{
+	    my $ref=\@recip_sign_ng;
+
+	    $ref=\@recip_crypt_ng
+		if ($ngkeys{$tmp});
+
+	    push @$ref,$tmp;
+	}
+	elsif (lc($config{$key}) eq "stdsign"
+	       || ( $custom_conf && $value eq "stdsign" )) # std, but signonly
+	{
+	    push @recip_sign_std,$tmp;
+	}
+	elsif (lc($config{$key}) eq "std"
+	       || ( $custom_conf && $value eq "std")) # consider only std-keys
+	{
+	    my $ref=\@recip_sign_std;
+
+	    $ref=\@recip_crypt_std
+		if ($stdkeys{$tmp});
+	    push @$ref,$tmp;
+	}
+	else			# everything else means no sign/crypt at all
+	{
+	    push @recip_none,$tmp;
+	}
+    }
+    # if there are recipients in recip_none, send the message to them
+    # without any further action
+    if (@recip_none)
+    {
+	logit("sending mail (raw) to ".join(",",@recip_none));
+	$res=&send_entity($in_ent,join(" ",@recip_none));
+	if ($res)
+	{
+	    $in_ent->purge;	# only if the sending went wrong
+	    return ("mail was not sent to anybody: $res");
+	}
+	push @sent,@recip_none;
+    }
+
+    # shortcut if no other recipients are given
+    return 0
+	if (!@recip_sign_std && !@recip_sign_ng
+	    && !@recip_crypt_std && !@recip_crypt_ng);
+
+    # copy (mail)header, split header info
+    # in mime-related (remains with the entity) and non-mime
+    # (is saved in the new header-object)
+    my $orig_header=$in_ent->head->dup;
+    my $headername;
+
+    # content-* stays with the entity and the rest moves to orig_header
+    foreach $headername ($in_ent->head->tags)
+    {
+	if ($headername !~ /^content-/i)
+	{
+	    # remove the stuff from the entity
+	    $in_ent->head->delete($headername);
+	}
+	else
+	{
+	    # remove this stuff from the orig_header
+	    $orig_header->delete($headername);
+	}
+    }
+
+    # any text/plain parts of the entity have to be fixed with the
+    # correct content-transfer-encoding (qp), since any transfer 8->7bit
+    # on the way otherwise will break the signature.
+    # this is not necessary if encrypting, but done anyways since
+    # it doesnt hurt and we want to be on the safe side.
+
+    qp_fix_parts($in_ent);
+
+    # now we've got a $in_entity which is ready to be encrypted/signed
+    # and the mail-headers are saved in $orig_header
+
+    # since the old pgp has problems with stuff signed/encrypted
+    # by newer software that uses partial-length headers when fed
+    # data via pipe, we write out our $in_entity to $tempfile_in
+    # which is then fed through the relevant signing/encryption and sent on.
+
+    if (!open(F,">$tempdir/$tempfile_in"))
+    {
+	logit("cant open >$tempdir/$tempfile_in: $!");
+	return ("mail was sent to ".
+		(@sent?join(",",@sent):"nobody")
+		.",\nnot to anybody else: ".
+		"cant open >$tempdir/$tempfile_in: $!");
+    }
+    $in_ent->print(\*F);
+    close(F);
+
+    if (@recip_sign_std)
+    {
+	logit("sending mail (sign,std) to ".join(",",@recip_sign_std));
+	$res=sign_send($in_ent,"$tempdir/$tempfile_in",\@recip_sign_std,
+		       \&std_sign,
+		       "md5",$orig_header,"std");
+	return ("mail was sent to ".
+		(@sent?join(",",@sent):"nobody")
+		.",\nnot to ".join(",",@recip_sign_std).": $res")
+	    if ($res);
+	push @sent,@recip_sign_std;
+    }
+
+    if (@recip_sign_ng)
+    {
+	logit("sending mail (sign,ng) to ".join(",",@recip_sign_ng));
+	$res=sign_send($in_ent,"$tempdir/$tempfile_in",\@recip_sign_ng,
+		       \&ng_sign,
+		       "sha1",$orig_header,"ng");
+	return ("mail was sent to ".
+		(@sent?join(",",@sent):"nobody")
+		.",\nnot to ".join(",",@recip_sign_ng).": $res")
+	    if ($res);
+	push @sent,@recip_sign_ng;
+    }
+
+    if (@recip_crypt_std)
+    {
+	my @keys;
+
+	logit("sending mail (crypt,std) to ".join(",",@recip_crypt_std));
+	map { push @keys,$stdkeys{$_}; } @recip_crypt_std;
+	$res=crypt_send($in_ent,"$tempdir/$tempfile_in",\@recip_crypt_std,
+			\@keys,\&std_crypt,
+			$orig_header);
+	return ("mail was sent to ".
+		(@sent?join(",",@sent):"nobody")
+		.",\nnot to ".join(",",@recip_crypt_std).": $res")
+	    if ($res);
+	push @sent,@recip_crypt_std;
+    }
+
+    if (@recip_crypt_ng)
+    {
+	my @keys;
+
+	logit("sending mail (crypt,ng) to ".join(",",@recip_crypt_ng));
+	map { push @keys,$ngkeys{$_}; } @recip_crypt_ng;
+	$res=crypt_send($in_ent,"$tempdir/$tempfile_in",\@recip_crypt_ng,
+			\@keys,\&ng_crypt,$orig_header);
+	return ("mail was sent to ".
+		(@sent?join(",",@sent):"nobody")
+		.",\nnot to ".join(",",@recip_crypt_ng).": $res")
+	    if ($res);
+	push @sent,@recip_crypt_ng;
+    }
+
+    # done, return
+    return 0;
+}
+
+# return 0 if ok, errortext otherwise
+sub sign_send
+{
+    my ($ent,$ent_file,$rec,$cmd,$micalg,$header,$type)=@_;
+    my $res;
+
+    # generate a new top-entity to be mailed
+    my $newent=new MIME::Entity;
+    # make a private copy of the passed header and set this one
+    $newent->head($header->dup);
+    # make it a multipart/signed
+    # and set the needed content-type-fields on this top entity
+    $newent->head->mime_attr("MIME-Version"=>"1.0");
+    $newent->head->mime_attr("Content-Type"=>"multipart/signed");
+    $newent->head->mime_attr("Content-Type.Boundary"=>
+			     &MIME::Entity::make_boundary);
+    $newent->head->mime_attr("Content-Type.Protocol"=>
+			     "application/pgp-signature");
+    $newent->head->mime_attr("content-Type.Micalg" => "pgp-$micalg");
+
+    $newent->preamble(["This is a multi-part message in MIME format.\n",
+		       "It has been signed conforming to RFC2015.\n",
+		       "You'll need PGP or GPG to check the signature.\n"]);
+
+    # add the passed entity as part
+    $newent->add_part($ent);
+
+    # make sure outfile is not existing
+    unlink("$tempdir/$tempfile_out");
+
+    # generate the signature
+    $res=&$cmd($ent_file,"$tempdir/$tempfile_out");
+    return $res if ($res);
+
+    # attach the signature
+    $newent->attach(Type => "application/pgp-signature",
+		    Path => "$tempdir/$tempfile_out",
+		    Filename => "signature.$type",
+		    Disposition => "inline",
+		    Encoding => "7bit");
+
+    # and send the resulting thing, not cleaning up
+    return &send_entity($newent,@{$rec});
+}
+
+# return 0 if ok, errortext otherwise
+sub crypt_send
+{
+    my ($ent,$ent_file,$rec,$rec_keys,$cmd,$header)=@_;
+    my $res;
+
+    # generate a new top-entity to be mailed
+    my $newent=new MIME::Entity;
+    # make a private copy of the passed header and set this one
+    $newent->head($header->dup);
+    # make it a multipart/encrypted
+    # and set the needed content-type-fields on this top entity
+    $newent->head->mime_attr("MIME-Version"=>"1.0");
+    $newent->head->mime_attr("Content-Type"=>"multipart/encrypted");
+    $newent->head->mime_attr("Content-Type.Boundary"=>
+			     &MIME::Entity::make_boundary);
+    $newent->head->mime_attr("Content-Type.Protocol"=>
+			     "application/pgp-encrypted");
+    # set the new preamble
+    $newent->preamble(["This is a multi-part message in MIME format.\n",
+		       "It has been encrypted conforming to RFC2015.\n",
+		       "You'll need PGP or GPG to view the content.\n"]);
+
+    # attach the needed dummy-part
+    $newent->attach(Type=>"application/pgp-encrypted",
+		    Data=>"Version: 1\n",
+		    Encoding=>"7bit");
+
+    # make sure tempfile is not existing
+    unlink("$tempdir/$tempfile_out");
+
+    # generate the encrypted data
+    $res=&$cmd($ent_file,"$tempdir/$tempfile_out",@{$rec_keys});
+    return $res if ($res);
+
+    # attach the encrypted data
+    $newent->attach(Type => "application/octet-stream",
+		    Path => "$tempdir/$tempfile_out",
+		    Filename => undef,
+		    Disposition => "inline",
+		    Encoding=>"7bit");
+
+    # and send the resulting thing
+    return &send_entity($newent,@{$rec});
+}
+
+# log the msg(s) to syslog
+sub logit
+{
+    my $msg = shift(@_);
+
+    setlogsock('unix');
+    openlog($progname,"pid,cons","mail");
+    syslog("notice","$msg");
+    closelog;
+}
+
+# send entity to $mta, passing $args to $mta
+# ent is a MIME::Entity and args is either "-t" or a list of recipients
+# returns 0 if ok or an errortext
+sub send_entity
+{
+    my ($ent,@args)=@_;
+
+    open(TOMTA,("|$mta ".join(" ",@args)))
+	|| return "cant open pipe to $mta: $!";
+    $ent->print(\*TOMTA);
+    close(TOMTA);
+    return "error when calling $mta: $!"
+	if ($?);
+    return "";
+}
+
+# remove temporary stuff left behind in directory $what
+# remove_what set: remove the dir, too.
+# returns: "" or errormsg
+sub cleanup
+{
+    my ($what,$remove_what)=@_;
+    my ($name,$res);
+
+    opendir(F,$what) || return "cant opendir $what: $!";
+    foreach $name (readdir(F))
+    {
+	next if ($name =~ /^\.{1,2}$/); # dont touch the dir-entries...
+	if (-d "$what/$name")
+	{
+	    $res=&cleanup("$what/$name");
+	    return $res if ($res);
+	    rmdir ("$what/$name") || return "cant rmdir $what/$name: $!";
+	}
+	else
+	{
+	    unlink("$what/$name") || return "cant unlink $what/$name: $!";
+	}
+    }
+    closedir(F);
+    if ($remove_what)
+    {
+	rmdir("$what") || return "cant rmdir $what: $!";
+    }
+    return 0;
+}
+
+# log termination, cleanup, exit
+sub handle_term
+{
+    my ($sig)=@_;
+    my $res;
+
+    logit("got termination signal SIG$sig, cleaning up");
+    $res=&cleanup($tempdir,1);
+    logit("problem cleaning up $tempdir: $res")
+	if ($res);
+    $res=&wipe_keys;
+    logit("problem doing the module cleanup routine: $res")
+	if ($res);
+    exit 0;
+}
+
+# reread configuration file and keyrings
+sub handle_hup
+{
+    my (@tmp,$lastkey);
+
+    # get the list of special adresses and adress-regexps
+    if (!open (F,$config))
+    {
+	logit("cant open $config: $!\n");
+    }
+    else
+    {
+	logit("reading config file");
+	%config=();
+	@configkeys=();
+	while (<F>)
+	{
+	    chomp;
+	    next if (/^\#/ || /^\s*$/); # strip comments and empty lines
+	    if (/^NGKEY\s+(\S.+)$/)
+	    {
+		$ng_defkey=$1;
+		logit("set default ng key ng to $1") if ($options{"d"});
+		next;
+	    }
+	    if (/^STDKEY\s+(\S.+)$/)
+	    {
+		$std_defkey=$1;
+		logit("set default std key to $1") if ($options{"d"});
+		next;
+	    }
+	    if (/^PGPPATH\s+(\S.+)\s*$/)
+	    {
+		$PGP=$1;
+		logit("set pgppath to $1") if ($options{"d"});
+		next;
+	    }
+	    if (/^GPGPATH\s+(\S.+)\s*$/)
+	    {
+		$GPG=$1;
+		logit("set gpgpath to $1") if ($options{"d"});
+		next;
+	    }
+	    if (/^USEPGP\s+(\d)/)
+	    {
+		$use_pgp=$1;
+		logit("set use_pgp to $1") if ($options{"d"});
+		next;
+	    }
+	    if (/^AGENTPATH\s+(\S.+)\s*$/) # 
+	    {
+		$agent=$1;
+		logit("set agent to $1") if ($options{"d"});
+		next;
+	    }
+	    if (/^CLIENTPATH\s+(\S.+)\s*$/)
+	    {
+		$client=$1;
+		logit("set client to $1") if ($options{"d"});
+		next;
+	    }
+	    if (/^SECRETONDEMAND\s+(\d)/)
+	    {
+		$secret_on_demand=$1;
+		logit("set secret_on_demand to $1") if ($options{"d"});
+		next;
+	    }
+	    if (/^ALWAYSTRUST\s+(\d)/)
+	    {
+		$alwaystrust=$1;
+		logit("set alwaystrust to $1") if ($options{"d"});
+		next;
+	    }
+
+	    if (/^QUEUEDIR\s+(\S+)\s*$/)
+	    {
+		logit("set queuedir to $1") if ($options{"d"});
+		$queuedir=$1;
+
+		# generate queuedir if not existing
+		if (!-d $queuedir)
+		{
+		    unlink "$queuedir";
+		    if (!mkdir($queuedir,0700))
+		    {
+			logit("cant mkdir $queuedir: $!");
+			die "cant mkdir $queuedir: $!\n";
+		    }
+		}
+		# check queuedir owner & perm
+		elsif ((stat($queuedir))[4] != $<)
+		{
+		    logit("$queuedir is not owned by you - refusing to run");
+		    die "$queuedir is not owned by you - refusing to run";
+		}
+		elsif ((stat($queuedir))[2]&0777 != 0700)
+		{
+		    logit("$queuedir does not have mode 0700 - refusing to run");
+		    die "$queuedir does not have mode 0700 - refusing to run";
+		}
+		next;
+	    }
+
+	    if (/^TEMPDIR\s+(\S+)\s*$/)
+	    {
+		logit("set tempdir to $1") if ($options{"d"});
+		$tempdir=$1;
+
+		# gen tempdir for storing mime-stuff
+		if (!-d $tempdir)
+		{
+		    unlink "$tempdir";
+		    if (!mkdir($tempdir,0700))
+		    {
+			logit("cant mkdir $tempdir: $!");
+			die "cant mkdir $tempdir: $!\n";
+		    }
+		}
+		elsif ((stat($tempdir))[4] != $<)
+		{
+		    logit("$tempdir is not owned by you - refusing to run");
+		    die "$tempdir is not owned by you - refusing to run";
+		}
+		elsif ((stat($tempdir))[2]&0777 != 0700)
+		{
+		    logit("$tempdir does not have mode 0700 - refusing to run");
+		    die "$tempdir does not have mode 0700 - refusing to run";
+		}
+		next;
+	    }
+
+	    if (/^(\S+)\s+(\S+)\s*$/)
+	    {
+		$config{lc($1)}=$2;
+		push @configkeys, lc($1);
+		logit("got conf $2 for $1") if ($options{"d"});
+	    }
+	}
+	close F;
+    }
+
+    # consistency checks
+    $use_agent=$client && $agent;
+    $secret_on_demand=0 if (!$use_agent);
+
+    logit("reading std keyring.");
+    %stdkeys=&std_listkeys;
+    logit("reading ng keyring.");
+    %ngkeys=&ng_listkeys;
+    return;
+}
+
+# traverses the entity and sets all parts with
+# type == text/plain, charset != us-ascii, transfer-encoding 8bit
+# to transfer-encoding qp.
+sub qp_fix_parts
+{
+    my ($entity)=@_;
+
+    if ($entity->is_multipart)
+    {
+	foreach ($entity->parts)
+	{
+	    &qp_fix_parts($_);
+	}
+    }
+    else
+    {
+	if ($entity->head->mime_type eq "text/plain"
+	    && $entity->head->mime_encoding eq "8bit"
+	    && lc($entity->head->mime_attr("content-type.charset"))
+	    ne "us-ascii")
+	{
+	    $entity->head->mime_attr("content-transfer-encoding"
+				     => "quoted-printable");
+	}
+    }
+}
+
+
+# notify the sender of the problem
+sub send_bounce
+{
+    my ($res,$file)=@_;
+
+    open(F,"|$mta -t") || return;
+    print F "From: $progname <$name>\nTo: <$name>\nSubject: Mail Send Failure\n\n";
+    print F "your mail $queuedir/$file could not be sent to some or all"
+	." recipients.\nthe detailed error message was:\n\n";
+    print F "$res\n";
+    print F "please remove the backup file $queuedir/.$file\n"
+	."or rename it back to $queuedir/$file if you want me to try again for all recipients.\n";
+    close F;
+}
+
+# list the public keys in the usual keyrings
+# returns: hash of (address,keyid)
+sub std_listkeys { if ($use_pgp) { return &pgp_listkeys; }
+		   else { return &gpg_listkeys_rsa; } }
+sub ng_listkeys { return &gpg_listkeys_norsa; }
+
+# sign a infile and write it to outfile
+# args: infile,outfile
+sub std_sign
+{
+    if ($use_pgp)
+    {
+	return &pgp_sign(@_,"");
+    }
+    else
+    {
+	return &gpg_sign(@_,$std_defkey,
+			 "--rfc1991 --cipher-algo idea --digest-algo md5"
+			 ." --compress-algo 1");
+    }
+}
+sub ng_sign { return &gpg_sign(@_,$ng_defkey,undef); }
+
+# crypt+sign a infile with keys, write it to outfile
+# args: infile,outfile,recipients
+sub std_crypt
+{
+    if ($use_pgp)
+    {
+	return &pgp_crypt("",@_);
+    }
+    else
+    {
+	return &gpg_crypt($std_defkey,@_);
+    }
+}
+sub ng_crypt  { return &gpg_crypt($ng_defkey,@_); }
+
+
+# setup for std pgp  (rsa/idea, 2.6.*)
+# returns: hash of address,key
+sub pgp_listkeys
+{
+    my (%stdkeys,$lastkey,@tmp);
+
+    #get the keys and dump the trailer and header lines
+    %stdkeys=();
+    @tmp=`$PGP -kv 2>$tempdir/subprocess`;
+    foreach (@tmp)
+    {
+	my $name;
+	
+	if (/^pub\s+\d+\/(\S+)\s+(.+)$/)
+	{
+	    my $userspec=$2;
+	    my $key=$1;
+	    
+	    if ($userspec =~ /<(.+)>/)
+	    {
+		$name=lc($1);
+	    }
+	    else
+	    {
+		undef $name;
+	    }
+
+	    if ($name)
+	    {
+		$stdkeys{$name}="0x$key";
+		$lastkey=$key;
+		&logit("got stdkey 0x$key for $name") if ($debug);
+	    }
+	    else
+	    {
+		$lastkey=$key;
+		&logit("saved stdkey 0x$key, no address known yet")
+		    if ($debug);
+	    }
+	    next;
+	}
+	if (/^\s+.*<(\S+)>\s*$/)
+	{
+	    my $name=lc($1);
+	    $stdkeys{$name}="0x$lastkey";
+	    &logit("got stdkey (uid) 0x$lastkey for $name") if ($debug);
+	}
+    }
+    return %stdkeys;
+}
+
+# generate detached signature
+# input: filename_in,filename_out,extra_args
+# output: errormsg or ""
+sub pgp_sign
+{
+    my ($infile,$outfile,$extra_args)=@_;
+    my ($passphrase,$passphrase_cmd);
+    if ($use_agent)
+    {
+	$passphrase_cmd="|$client get $std_defkey";
+	$passphrase="";
+
+	# check the passphrase for correctness
+	# only if actual work is requested
+	&verify_passphrase($std_defkey) if ($infile || $outfile);
+    }
+    else
+    {
+	$passphrase_cmd="";
+	$passphrase=$secrets{$std_defkey};
+	return "no passphrase known for key $std_defkey"
+	    if (!$passphrase);
+    }
+
+    if (!$infile && !$outfile)	# only check the passphrase
+    {
+	open(F,"$passphrase_cmd|PGPPASSFD=0 $PGP +batchmode "
+	     ."$extra_args -u $std_defkey -sbatf >$tempdir/subprocess 2>&1")
+	    || return "cant open |pgp: $!";
+    }
+    else
+    {
+	open(F,"$passphrase_cmd|PGPPASSFD=0 $PGP +batchmode $extra_args "
+	     ."-u $std_defkey -sbat $infile -o $outfile >$tempdir/subprocess 2>&1")
+	    || return "cant open |pgp: $!";
+    }
+    print F "$passphrase\n"
+	if ($passphrase);
+    close(F);
+    $passphrase="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; # does this overwrite?
+    return "" if (!$?);
+    open F,"$tempdir/subprocess";
+    my @result=<F>;
+    close F;
+    return "error running pgp: $!\n".join("\n",@result) if ($? == 0xff00);
+    return "pgp died from signal" . ($? & 0x7f)."\n".join("\n",@result) if ($? <= 0x80);
+    $? >>= 8;
+    return "bad passphrase\n".join("\n",@result) if ($? == 20);
+    return "pgp returned $?\n".join("\n",@result);
+}
+
+# sign and encrypt
+# input: extra_args,filename_in,filename_out,recipients
+# output: errormsg or ""
+sub pgp_crypt
+{
+    my ($extra_args,$infile,$outfile,@recipients)=@_;
+    my ($passphrase,$cmd);
+
+    if ($use_agent)
+    {
+	$passphrase="";
+	$cmd="$client get $std_defkey|";
+
+	&verify_passphrase($std_defkey);
+    }
+    else
+    {
+	$passphrase=$secrets{$std_defkey};
+	return "no passphrase known for key $std_defkey"
+	    if (!$passphrase);
+    }
+
+    $cmd.="PGPPASSFD=0 $PGP +batchmode $extra_args -u $std_defkey -esat "
+	."$infile -o $outfile " . join(" ",@recipients) ." >$tempdir/subprocess 2>&1";
+
+    open(F,"|$cmd") || return "cant open |pgp: $!";
+    print F "$passphrase\n"
+	if ($passphrase);
+    close(F);
+    $passphrase="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; # does this overwrite?
+    return "" if (!$?);
+    open F,"$tempdir/subprocess";
+    my @result=<F>;
+    close F;
+    return "error running pgp: $!\n".join("\n",@result) if ($? == 0xff00);
+    return "pgp died from signal" . ($? & 0x7f)
+	."\n".join("\n",@result) if ($? <= 0x80);
+    $? >>= 8;
+    return "bad passphrase\n".join("\n",@result) if ($? == 20);
+    return "pgp returned $?\n".join("\n",@result);
+}
+
+# generate detached signature
+# input: filename_in,filename_out,key,extra_args
+# key is the key that's used for signing & secret retrieval
+# output: errormsg or ""
+sub gpg_sign
+{
+    my ($infile,$outfile,$key,$extra_args)=@_;
+    my ($passphrase_cmd,$passphrase);
+
+    if ($use_agent)
+    {
+	$passphrase_cmd="|$client get $key";
+	$passphrase="";
+
+	&verify_passphrase($key) if ($infile || $outfile);
+    }
+    else
+    {
+	$passphrase_cmd="";
+	$passphrase=$secrets{$key};
+	return "no passphrase known for key $key"
+	    if (!$passphrase);
+    }
+
+    if (!$infile && !$outfile)	# only check passphrase
+    {
+	open(F,"$passphrase_cmd|$GPG -q -t --batch --armor "
+	     ."--passphrase-fd 0 --default-key $key $extra_args --detach-sign "
+	     .">$tempdir/subprocess 2>&1") || return "cant open |gpg: $!";
+    }
+    else
+    {
+	open(F,"$passphrase_cmd|$GPG -q -t --batch --armor --passphrase-fd 0 "
+	     ."--default-key $key $extra_args --detach-sign -o $outfile $infile "
+	     .">$tempdir/subprocess 2>&1")
+	    || return "cant open |gpg: $!";
+    }
+    print F "$passphrase\n"
+	if ($passphrase);
+    close(F);
+    $passphrase="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; # does this overwrite?
+    return "" if (!$?);
+    open F,"$tempdir/subprocess";
+    my @result=<F>;
+    close F;
+    return "error running gpg: $!\n".join("\n",@result) if ($? == 0xff00);
+    return "gpg died from signal" . ($? & 0x7f)
+	."\n".join("\n",@result) if ($? <= 0x80);
+    $? >>= 8;
+    return "gpg returned $?\n".join("\n",@result);
+}
+
+# sign and encrypt
+# input: key,filename_in,filename_out,recipients
+# key is used for signing & secret retrieval
+# if key is an rsa-key, do all the
+# stuff thats needed to generate rsa-stuff that pgp2 can successfully
+# decrypt (this means to care for some bugs in pgp2 and emulate
+# its behaviour...
+# output: errormsg or ""
+sub gpg_crypt
+{
+    my ($key,$infile,$outfile,@recipients)=@_;
+    my ($cmd,$passphrase);
+
+    if ($use_agent)
+    {
+	$passphrase="";
+	$cmd="$client get $key|";
+
+	&verify_passphrase($key);
+    }
+    else
+    {
+	$passphrase=$secrets{$key};
+	return "no passphrase known for key $key"
+	    if (!$passphrase);
+    }
+
+    if ($key eq $std_defkey) # means: compat mode!
+    {
+	my $res;
+
+	# very elaborate but working procedure, found by
+	# Gero Treuner <gero@faveve.uni-stuttgart.de>
+	# http://muppet.faveve.uni-stuttgart.de/~gero/gpg-2comp
+
+	# first, generate the signature and store it
+	$cmd.="$GPG --batch -q --detach-sign --default-key $key "
+	    ."--passphrase-fd 0 -o $outfile.inter1 $infile >$tempdir/subprocess 2>&1";
+	open(F,"|$cmd") || return "cant open |gpg: $!";
+	print F "$passphrase\n"
+	    if ($passphrase);
+	close(F);
+	$passphrase="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+	if ($?)
+	{
+	    open F,"$tempdir/subprocess";
+	    my @result=<F>;
+	    close F;
+	    return "error running gpg: $!\n"
+		.join("\n",@result) if ($? == 0xff00);
+	    return "gpg died from signal" . ($? & 0x7f)
+		."\n".join("\n",@result)if ($? <= 0x80);
+	    $? >>= 8;
+	    return "gpg returned $?\n".join("\n",@result);
+	}
+
+	# then, convert the cleartext to the internal literal structure
+	$res=0xffff
+	    & system("$GPG --batch -q --store -z 0 -o $outfile.inter2 "
+		     ."$infile >$tempdir/subprocess 2>&1");
+	if ($res)
+	{
+	    open F,"$tempdir/subprocess";
+	    my @result=<F>;
+	    close F;
+	    return "error running gpg literal conversion: $res\n"
+		.join("\n",@result);
+	}
+
+	# compress signature and literal in the required order
+	$res=0xffff & system("$CAT $outfile.inter1 $outfile.inter2"
+			     ."|$GPG --no-literal --store --compress-algo 1 "
+			     ."-o $outfile.inter3 >$tempdir/subprocess 2>&1");
+	if ($res)
+	{
+	    open F,"$tempdir/subprocess";
+	    my @result=<F>;
+	    close F;
+	    return "error running gpg sig+data compression: $res\n"
+		.join("\n",@result);
+	}
+
+	# and finally encrypt all this for the wanted recipients.
+	$cmd="$GPG --no-options --load-extension idea "
+	    ."--no-literal --encrypt --rfc1991 --cipher-algo idea "
+		.($alwaystrust?"--always-trust ":"")
+		."--armor -o $outfile -r "
+		    .join(" -r ",@recipients)
+		    ." $outfile.inter3 >$tempdir/subprocess 2>&1";
+	$res= 0xffff & system($cmd);
+	if ($res)
+	{
+	    open F,"$tempdir/subprocess";
+	    my @result=<F>;
+	    close F;
+	    return "error running gpg encryption: $res\n"
+		.join("\n",@result);
+	}
+	return "";
+    }
+    else
+	# the usual variant: ng-keys only, no backwards compatibility for
+	# pgp2
+    {
+	$cmd.="$GPG --batch -q -t --armor --passphrase-fd 0 "
+	    .($alwaystrust?"--always-trust ":"")
+		."-o $outfile --default-key $key -r "
+		    . join(" -r ",@recipients)
+			." --encrypt --sign $infile >$tempdir/subprocess 2>&1";
+	
+	open(F,"|$cmd") || return "cant open |gpg: $!";
+	print F "$passphrase\n"
+	    if ($passphrase);
+	close(F);
+	$passphrase="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+	return "" if (!$?);
+	open F,"$tempdir/subprocess";
+	my @result=<F>;
+	close F;
+	return "error running gpg: $!\n".join("\n",@result) if ($? == 0xff00);
+	return "gpg died from signal" . ($? & 0x7f).
+	    "\n".join("\n",@result)if ($? <= 0x80);
+	$? >>= 8;
+	return "gpg returned $?\n".join("\n",@result);
+    }
+}
+
+# list keys
+# returns: hash of address,key
+sub gpg_listkeys_norsa
+{
+    my (%ngkeys,$lastkey,@tmp,@info,$now);
+
+    $now=time;
+
+    @tmp=`$GPG -q --batch --list-keys --with-colons`;
+    foreach (@tmp)
+    {
+	my $name;
+
+	@info=split(/:/);
+	# only public keys and uids are of interest
+	next if ($info[0] ne "pub" && $info[0] ne "uid");
+
+	$info[4] =~ s/^.{8}//;	# truncate key-id
+
+	# no rsa-keys, please
+	# and be sure to skip these uid's, too
+	if ($info[3] eq "1")
+	{
+	    &logit("ignoring rsa key 0x$info[4]") if ($debug);
+	    undef $lastkey;
+	    next;
+	}
+	
+	# ignore expired keys
+	if ($info[6] && $info[6]=~/^(\d+)-(\d+)-(\d+)$/)
+	{
+	    # yyyy-mm-dd
+	    if (timegm(0,0,0,$3,$2-1,$1-1900)<$now)
+	    {
+		&logit("ignoring expired DSA key 0x$info[4]");
+		undef $lastkey;	# uids have no expiry, still BSTS...
+		next;
+	    }
+	}
+
+	# fixme lowprio: more general unquote
+	$info[9] =~ s/\\x3a/:/g; # re-insert colons, please
+
+	# remember the email address
+	# if no address given: remember this key 
+	# but go on to the uid's to get an email address to
+	# work with
+	if ($info[9] =~ /<(.+)>/)
+	{
+	    $name=lc($1);
+	}
+	else
+	{
+	    undef $name;
+	}
+	
+	# check the key: public part or uid?
+	if ($info[0] eq "pub")
+	{
+	    # lets associate this key with the current email address
+	    # if an address is known
+	    $lastkey=$info[4];
+
+	    if ($name)
+	    {
+		$ngkeys{$name}="0x$lastkey";
+		
+		&logit("got ngkey 0x$lastkey for $name")
+		    if ($debug);
+	    }
+	    else
+	    {
+		&logit("saved ngkey 0x$lastkey, no address known yet")
+		    if ($debug);
+	    }
+	    next;
+	}
+	else
+	{
+	    # uid: associate the current address with the key 
+	    # given in the most recent public key line
+	    # if no such key saved: the pub key was an rsa key &
+	    # we're set to ignore those
+	    if (!$lastkey)
+	    {
+		$name="<no valid address>" if (!$name);
+		&logit("ignoring uid $name, belongs to rsa key")
+		    if ($debug);
+	    }
+	    else
+	    {
+		if ($name)
+		{
+		    $ngkeys{$name}="0x$lastkey";
+		    &logit("got ngkey (uid) 0x$lastkey for $name")
+			if ($debug);
+		}
+		else
+		{
+		    &logit("ignoring uid without valid address")
+			if ($debug);
+
+		}
+	    }
+	}
+    }
+    return %ngkeys;
+}
+
+# list keys
+# returns: hash of address,key
+sub gpg_listkeys_rsa
+{
+    my (%stdkeys,$lastkey,@tmp,@info,$now);
+
+    $now=time;
+
+    @tmp=`$GPG -q --batch --list-keys --with-colons`;
+    foreach (@tmp)
+    {
+	my $name;
+
+	@info=split(/:/);
+	# only public keys and uids are of interest
+	next if ($info[0] ne "pub" && $info[0] ne "uid");
+
+	$info[4] =~ s/^.{8}//;	# truncate key-id
+
+	# no dsa/elg-keys, please
+	# and be sure to skip these uid's, too
+	if ($info[3] > 1)
+	{
+	    &logit("ignoring dsa/elg key 0x$info[4]") if ($debug);
+	    undef $lastkey;
+	    next;
+	}
+
+	# ignore expired keys
+	if ($info[6] && $info[6]=~/^(\d+)-(\d+)-(\d+)$/)
+	{
+	    # yyyy-mm-dd
+	    if (timegm(0,0,0,$3,$2-1,$1-1900)<$now)
+	    {
+		&logit("ignoring expired RSA key 0x$info[4]");
+		undef $lastkey;	# uids have no expiry, still BSTS...
+		next;
+	    }
+	}
+
+	# fixme lowprio: general unquote
+	$info[9] =~ s/\\x3a/:/g; # re-insert colons, please
+
+	# remember the email address
+	# if no address given: remember this key 
+	# but go on to the uid's to get an email address to
+	# work with
+	if ($info[9] =~ /<(.+)>/)
+	{
+	    $name=lc($1);
+	}
+	else
+	{
+	    undef $name;
+	}
+
+	if ($info[0] eq "pub")
+	{
+	    $lastkey=$info[4];
+	    
+	    if ($name)
+	    {
+		$stdkeys{$name}="0x$lastkey";
+		
+		&logit("got stdkey 0x$lastkey for $name")
+		    if ($debug);
+	    }
+	    else
+	    {
+		&logit("saved stdkey 0x$lastkey, no address known yet")
+		    if ($debug);
+	    }
+	    next;
+	}
+	else
+	{
+	    # uid: associate the current address with the key 
+	    # given in the most recent public key line
+	    # if no such key saved: the pub key was an dsa key &
+	    # we're set to ignore those
+	    if (!$lastkey)
+	    {
+		$name="<no valid address>" if (!$name);
+		&logit("ignoring uid $name, belongs to dsa/elg key")
+		    if ($debug);
+	    }
+	    else
+	    {
+		if ($name)
+		{
+		    $stdkeys{$name}="0x$lastkey";
+		    &logit("got stdkey (uid) 0x$lastkey for $name")
+			if ($debug);
+		}
+		else
+		{
+		    &logit("ignoring uid without valid address")
+			if ($debug);
+		}
+	    }
+	}
+    }
+    return %stdkeys;
+}
+
+# get and store a secret
+# if agent support activated: check if agent running
+# and let client ask for the secret and store it
+# otherwise, ask and store the secret yourself
+# returns error text or ""
+sub askput_secret
+{
+    my ($id)=@_;
+    my ($res,$phrase);
+
+    if ($use_agent)
+    {
+	# now let the secret client handle the situation:
+	# it asks for the secret and stores it
+	$res = 0xffff & system "$client put $id 2>$tempdir/subprocess";
+	if ($res)
+	{
+	    open F,"$tempdir/subprocess";
+	    my @result=<F>;
+	    close F;
+	    return "secret-client returned error code $res\n"
+		.join("\n",@result);
+	}
+	return 0;
+    }
+    else
+    {
+	print "enter secret for key $id:\n";
+	system "stty -echo";
+	chomp ($phrase=<>);
+	system "stty echo";
+	print "\n";
+	$secrets{$id}=$phrase;
+	$phrase="xxxxxxxxxxxxxxxxxxxxxxxxxxx"; # does this overwrite
+				# the previous content? lets hope so...
+	return 0;
+    }
+}
+
+# lookup the usual default key, if none is given
+# pgp: use the first key in the secret keyring
+# gpg/norsa: use the first dsa-key in the secret keyring
+# gpg/rsa: similar, the first rsa-key is used
+# returns keyid (std,ng)
+sub lookup_defkeys
+{
+    my (@list,@tmp,$stdkey,$ngkey);
+
+    # first, get the std key as this is more work
+    $stdkey="";
+
+    # if we use pgp, ask pgp to show the contents of the secret keyring
+    # (ugly)
+    if ($use_pgp)
+    {
+	# fixme lowprio: is there a neater way to do this?
+	@list=`$PGP -kv $ENV{HOME}/.pgp/secring.pgp 2>$tempdir/subprocess`;
+	foreach (@list)
+	{
+	    if (/^sec\s+\d+\/(\S+)\s+/)
+	    {
+		$stdkey="0x$1";
+		&logit("defaultkey for std is $stdkey") if ($debug);
+		last;
+	    }
+	}
+    }
+    # else we ask gpg to show the secring and use the first rsa key
+    else
+    {
+	@tmp=`$GPG -q --batch --list-secret-keys --with-colons`;
+	foreach (@tmp)
+	{
+	    @list=split(/:/);
+	    next if ($list[0] ne "sec"); # only check secret keys
+	    $list[4] =~ s/^.{8}//;	# truncate key-id
+
+	    if ($list[3] eq "1") # this is a rsa key
+	    {
+		$stdkey="0x$list[4]";
+		&logit("defaultkey for std is $stdkey") if ($debug);
+		last;
+	    }
+	}
+    }
+
+    # now, get the ng key
+    @tmp=`$GPG -q --batch --list-secret-keys --with-colons`;
+    foreach (@tmp)
+    {
+	@list=split(/:/);
+	next if ($list[0] ne "sec"); # only check secret keys
+	$list[4] =~ s/^.{8}//;	# truncate key-id
+
+	if ($list[3] ne "1") # this is not a rsa key, therefore dsa/elg
+	{
+	    $ngkey="0x$list[4]";
+	    &logit("defaultkey for ng is $ngkey") if ($debug);
+	    last;
+	}
+    }
+    return ($stdkey,$ngkey);
+}
+
+# sets the default default keys if none specified yet
+# does the setup for the agent-process if needed
+# asks, verifies and stores the secrets if secret_on_demand is not set
+# returns "" or error
+sub get_verify_secrets
+{
+    my ($stdkey,$ngkey)=&lookup_defkeys;
+    my $res;
+
+    # set the std std keys if no overrides given and keys were returned
+    # by the lookup
+    $std_defkey=$stdkey if (!$std_defkey && $stdkey);
+    $ng_defkey=$ngkey if (!$ng_defkey && $ngkey);
+
+    return "no default key for std known"
+	if (!$std_defkey);
+    return "no default key for ng known"
+	if (!$ng_defkey);
+
+
+    # if use_agent is set, check if the agent is running and start one
+    # if needed.
+    if ($use_agent)
+    {
+	# check if agent properly active
+	# not running? start a personal instance
+	# and remember its pid
+	if (!$ENV{"AGENT_SOCKET"})
+	{
+	    # start your own agent process
+	    # and remember its pid
+	    $private_agent=open(SOCKETNAME,"-|");
+	    return "cant fork: $!" if (!defined($private_agent));
+	    if ($private_agent)	# original process
+	    {
+		# get the socketname
+		$res=<SOCKETNAME>;
+		# and set the correct env variable for client
+		$res=~/^AGENT_SOCKET=\'(.+)\';/;
+		$ENV{"AGENT_SOCKET"}=$1;
+		# do not close the pipe, because then the
+		# parent process tries to wait() on the child,
+		# which wont work here
+		&logit("forked secret-agent pid $private_agent,"
+		       ."socket is $1")
+		    if ($options{"d"});
+	    }
+	    else
+		# the child that should exec the quintuple-agent
+		# but must not let quintuple-agent fork...
+	    {
+		exec "$agent","--nofork"
+		    || die "cant exec $agent: $!\n";
+	    }
+	}
+    }
+    elsif ($secret_on_demand)
+    {
+	return "secret_on_demand without agent-support is not possible.";
+    }
+    if (!$secret_on_demand || !$ENV{"DISPLAY"})
+    {
+	# get the std passphrase and verify it
+	do
+	{
+	    $res=&askput_secret($std_defkey);
+	    return $res if ($res);
+	    $res=std_sign(undef,undef);
+	    print "wrong passphrase, try again.\n"
+		if ($res);
+	}
+	while ($res);
+
+	# get the ng passphrase and verify it
+	do
+	{
+	    $res=&askput_secret($ng_defkey);
+	    return $res if ($res);
+	    $res=ng_sign(undef,undef);
+	    print "wrong passphrase, try again.\n"
+		if ($res);
+	}
+	while ($res);
+    }
+    return "";
+}
+
+# if secret-agent support is active:
+# removes the keys from the secret agent's store and
+# terminates the agent if wanted
+sub wipe_keys
+{
+    my $res;
+
+    if ($use_agent)
+    {
+	$res = 0xffff & system "$client delete $std_defkey";
+	&logit("problem deleting secret for $std_defkey: $res")
+	    if ($res);
+	$res = 0xffff & system "$client delete $ng_defkey";
+	&logit("problem deleting secret for $ng_defkey: $res")
+	    if ($res);
+
+	if ($private_agent)
+	{
+	    # kill the private agent process
+	    $res = kill('TERM',$private_agent);
+	    &logit("problem killing $private_agent: $!") if (!$res);
+	    wait;
+	}
+    }
+    return "";
+}
+
+
+# requests the passphrase from secret agent and runs it 
+# through the usual verification process.
+# does not stop until the passphrase passes the test.
+# does assume that secret agent is running (will not be called
+# otherwise...)
+sub verify_passphrase
+{
+    my ($key)=@_;
+    my $res;
+
+    while (1)
+    {
+	# let the sign subroutine check for validity
+	if ($key eq $std_defkey)
+	{
+	    $res=std_sign(undef,undef);
+	}
+	else
+	{
+	    $res=ng_sign(undef,undef);
+	}
+	
+	# ok? then exit
+	return 0 if (!$res);
+	# otherwise nuke the key in order to make 
+	system("$client delete $key");
+    }
+    exit 1;			# must not reach here
+}
+
+    
+    
+
+    
