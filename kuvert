@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.12 2002/01/30 13:36:38 az Exp az $
+#   $Id: kuvert,v 1.13 2002/01/30 14:23:21 az Exp az $
 #--
 
 use strict;
@@ -42,7 +42,7 @@ if (!getopts("dkrnv",\%options) || @ARGV)
 }
 
 # manually updated...not perfect
-my $version="1.0.5";
+my $version="1.0.7";
 
 if ($options{'v'})
 {
