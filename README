@@ -2,11 +2,39 @@ this is kuvert, a wrapper around sendmail or other MTAs that
 does pgp/gpg signing/signing+encrypting transparently, based
 on the content of your public keyring(s) and your preferences.
 
+how it works:
+-------------
+
+you have to get your MUA to use kuvert_mta_wrapper instead of executing
+/usr/lib/sendmail (or similar). kuvert_mta_wrapper will spool the mail
+in kuvert's queue, iff there is a suitable configuration file and the 
+parameters passed to kuvert_mta_wrapper are consistent with sending mail
+via sendmail.
+
+kuvert is the tool that takes care of mangling the email. it reads the 
+queue periodically and handles emails in the queue: signing or encrypting
+the mail, then handing it over to /usr/lib/sendmail for transport.
+
+(why a queue? because i thought it might be useful to make sure that none of
+your emails leaves your system without kuvert handing it. you might be 
+very paranoid, and kill kuvert whenever you leave your box (and remove
+the keyrings as well).)
+
 how to use kuvert in a nutshell: 
 --------------------------------
 
-on debian systems you may install just the kuvert package and
-the rest of the  installation will be taken care of automatically.
+you'll need a MTA which provides /usr/lib/sendmail with "common" options
+(see the manpage for which are necessary). also you'll need a MUA which
+can be instructed not to run /usr/lib/sendmail.
+
+in a pinch you could rename /usr/lib/sendmail to something else, and install
+kuvert_mta_wrapper as /usr/lib/sendmail. if you choose so, make double sure 
+that your ~/.kuvert lists the name of the real sendmail binary as MTA.
+
+installation:
+-------------
+
+on debian systems you may install just the kuvert package.
 
 on other systems you need to do the following:
 
@@ -19,8 +47,15 @@ run make, make install DESTDIR=/ as root
 -> kuvert, kuvert_mta_wrapper and the two manpages will be installed
 in /usr/bin and /usr/share/man/man1.
 
+configuration:
+--------------
+
 read the manpages for kuvert(1) and kuvert_mta_wrapper(1), 
-configure kuvert and go on from there.
+instruct your MUA to use kuvert_mta_wrapper, make the config file
+~/.kuvert.
+
+finally start kuvert and inject a testmail, look at the logs to check
+if everything works correctly.
 
 (historical note: kuvert came into existence in 1996 as pgpmail and
 was used only privately until 99, when it was extended and renamed
@@ -33,7 +68,7 @@ please report bugs to me, Alexander Zangerl, <az@snafu.priv.at>.
 The original source can always be found at:
 	http://www.snafu.priv.at/kuvert/
 
-Copyright (C) 1999-2001  Alexander Zangerl
+Copyright (C) 1999-2002  Alexander Zangerl
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
