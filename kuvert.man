@@ -154,7 +154,8 @@ Default: 0
 defines the Mail Transfer Agent 
 .Nm kuvert 
 should use. The MTA must support the flag 
-.Fl t .
+.Fl t , 
+and also support multiple recipients given in separate arguments.
 Default: /usr/lib/sendmail -om -oi -oem
 .It Ar AGENTPATH Pa path
 defines the quintuple-agent binary (see 
