@@ -164,14 +164,17 @@ defines the quintuple-agent binary (see
 defines the quintuple-client binary (see 
 .Xr q-client "1") to be used, if available. Default: none
 .It Ar SECRETONDEMAND number
-if 1 and if agent and client are available, 
+SECRETONDEMAND is ignored if agent and client are not available, as 
+.Nm kuvert
+has to store passphrases itself then.
+Otherwise, if SECRETONDEMAND is 1,
 .Nm kuvert
 will ask for the
-key passphrases on demand, just when signing. If one of these requirements
-is not given, 
+key passphrases on demand and just before signing.  If SECRETONDEMAND is 0, 
+then 
 .Nm kuvert
-will ask for the passphrases at startup and will store
-them itself. Default: 0
+will query for passphrases as early as possible (but still use the agent to 
+store the passphrases). Default: 0
 .It Ar ALWAYSTRUST number
 if 1, add the alwaystrust parameter to gpg's invocation. see 
 .Xr gpg "1" for details about this parameter. Default: 0
