@@ -11,7 +11,7 @@ kuvert \- automatically sign and/or encrypt mail based on the recipients
 .Nm kuvert 
 reads mails from its queue, analyzes the recipients, decides to whom
 it should encrypt and/or sign the mail using the PGP-MIME framework
-defined in RFC2015 and sends the mail using your real MTA. kuvert can use
+defined in RFC3156 and sends the mail using your real MTA. kuvert can use
 both old-style 2.x 
 .Xr pgp 1
 and modern 
@@ -67,7 +67,7 @@ will parse the mime structure into a temporary directory using
 .Pp
 .Nm kuvert
 then decides whether the mail shall be left as is, clear-text signed
-or signed and encrypted according to RFC2015.
+or signed and encrypted according to RFC3156.
 This decision is done independently for every recipient of the
 mail and works as follows: 
 .Bl -bullet
@@ -367,7 +367,7 @@ holds the pid of a running process.
 .Xr q-agent "1",
 .BR gpg "1",
 .BR pgp "1",
-RFC2015, RFC2440
+RFC3156, RFC2015, RFC2440
 .Sh AUTHORS
 .An Alexander Zangerl <az@snafu.priv.at>
 .Sh BUGS
