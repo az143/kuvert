@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.4 2001/11/11 10:28:53 az Exp az $
+#   $Id: kuvert,v 1.5 2001/11/11 11:41:05 az Exp az $
 #--
 
 use strict;
@@ -35,10 +35,10 @@ use Time::Local;
 use FileHandle;
 
 my %options;
-if (!getopts("dkr",\%options) || @ARGV)
+if (!getopts("dkrn",\%options) || @ARGV)
 {
-    print "usage: $0 [-d] | [-k] | [-r] \n-k: kill running $0\n"
-	."-d: debug mode\n-r: reload keyrings and configfile\n";
+    print "usage: $0 [-n] [-d] | [-k] | [-r] \n-k: kill running $0\n"
+	."-d: debug mode\n-r: reload keyrings and configfile\n-n don't fork";
     exit 1;
 }
 
@@ -139,7 +139,7 @@ $debug=1 if ($options{"d"});
 if ($options{"k"} || $options{"r"})
 {
     my $pid;
-    my $sig=($options{"r"}?'HUP':'TERM');
+    my $sig=($options{"r"}?'USR1':'TERM');
 
     open(PIDF,"$pidf") || die "cant open $pidf: $!\n";
     $pid=<PIDF>;
@@ -190,7 +190,7 @@ if ($res=cleanup($tempdir,0))
 $res=&get_verify_secrets;
 die "secrets could not be initialized properly: $res\n" if ($res);
 
-if (!$options{"d"})
+if (!$options{"d"} && !$options{"n"})
 {
     my $res=fork;
 
@@ -205,9 +205,10 @@ print PIDF "$$\n";
 PIDF->flush;
 truncate PIDF,tell(PIDF);	# and make sure there's nothing else in there...
 
-# install the hup-handler
-$SIG{'HUP'}=\&handle_hup;
+# install the handler for conf reread
+$SIG{'USR1'}=\&handle_reload;
 # and the termination-handler
+$SIG{'HUP'}=\&handle_term;
 $SIG{'INT'}=\&handle_term;
 $SIG{'QUIT'}=\&handle_term;
 $SIG{'TERM'}=\&handle_term;
@@ -267,6 +268,7 @@ while (1)
 	close(FH);
     }
     closedir(D);
+    &handle_term("debug mode") if ($options{"d"});
     sleep($interval);
 }
 
@@ -756,7 +758,7 @@ sub handle_term
 }
 
 # reread configuration file and keyrings
-sub handle_hup
+sub handle_reload
 {
     my (@tmp,$lastkey);
 
