@@ -26,7 +26,7 @@ The option
 .Fl r
 causes an already running 
 .Nm kuvert
-process to reload the configuration file.
+process to reload the configuration file and the keyring(s).
 This is done by sending a SIGUSR1 to the running process.
 .Pp
 The option
@@ -57,7 +57,7 @@ output its version number and exit immediately.
 .Pp
 At startup 
 .Nm kuvert
-reads the keyring(s) and the config file (if available),
+reads the keyring(s) and the configuration file,
 then usually forks and runs the queue once every 60 seconds.
 Whenever there is a file with a name consisting of digits only in the
 queue, 
@@ -112,12 +112,12 @@ queue-runs)
 and sends an error message back to the sender.
 .Sh CONFIGURATION
 .Nm kuvert
-allows for configuration with a configuration file
+needs some configuration directives in its configuration file
 .Pa ~/.kuvert .
-This file is read at startup or whenever you have 
+This file is read at startup and whenever you have 
 .Nm kuvert 
-reread the files using 
-.Fl "r".
+reread things using 
+.Fl r.
 Empty lines and lines starting with
 .Ql #
 are ignored, as well as lines containing directives 
