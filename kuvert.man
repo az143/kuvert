@@ -216,6 +216,12 @@ Default:
 .It Ar INTERVAL number
 sets the queue check interval. the unit of measurement is seconds.
 Default: 60 seconds
+.It Ar IDENTIFY number
+if non-zero, 
+.Nm kuvert 
+adds a 
+.Ql X-mailer 
+header to all mails it processes. Default: 0
 .It Ar NGKEY keyid
 sets the owner's key id for new-style pgp/gpg. To disable new-style pgp/gpg
 completely, set the keyid to "0". Default: the first private DSA key found is used.

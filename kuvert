@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.7 2003/02/08 13:09:39 az Exp az $
+#   $Id: kuvert,v 2.8 2003/02/16 13:42:10 az Exp az $
 #--
 
 use strict;
@@ -266,6 +266,10 @@ sub process_file
     eval { $in_ent=$parser->read(\$fh); };
     bailout("could not parse MIME stream, last header was ".$parser->last_head)
 	if ($@);
+
+    # add version header
+    $in_ent->head->add('X-mailer',"$progname $version")
+	if ($config{identify});
 
     # extract and delete instruction header
     my $custom_conf=lc($in_ent->head->get("x-kuvert"));
@@ -814,7 +818,8 @@ sub read_config
 		 tempdir=>($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp")."/kuvert.$username.$$",
 		 queuedir=>"$home/.kuvert_queue",
 		 logfile=>undef,
-		 logfh=>undef);
+		 logfh=>undef,
+		 identify=0);
     
     &bailout("cant open $rcfile: $! -- exiting")
 	if (!open (F,$rcfile));
