@@ -1,5 +1,5 @@
 /*
- * $Id: kuvert_mta_wrapper.c,v 1.1 2001/11/06 13:00:44 az Exp az $
+ * $Id: kuvert_mta_wrapper.c,v 1.2 2001/11/06 13:14:28 az Exp az $
  * 
  * this file is part of kuvert, a wrapper around your mta that
  * does pgp/gpg signing/signing+encrypting transparently, based
@@ -82,17 +82,17 @@ int main(int argc,char **argv)
       if (!optarg || *optarg != 'm') 
       {
 	fallback=1;
-	syslog(LOG_INFO,"option '-%c %s' mandates fallback",
+	syslog(LOG_INFO,"option '-%c%s' mandates fallback",
 	       c,optarg ? optarg : "");
       }
       break;
     case 'o':
-      /* -oi, -e*, -d* are ok */
+      /* -oi, -oe*, -od* are ok */
       if (!optarg || (*optarg != 'i' && *optarg != 'e' 
 		      && *optarg != 'd'))
       {
 	fallback=1;
-	syslog(LOG_INFO,"option '-%c %s' mandates fallback",
+	syslog(LOG_INFO,"option '-%c%s' mandates fallback",
 	       c,optarg ? optarg : "");
       }
       break;
@@ -121,40 +121,42 @@ int main(int argc,char **argv)
       syslog(LOG_INFO,"user has no .kuvert config file, fallback");
       fallback=1;
     }
-    
-    /* scan the lines for ^QUEUEDIR\s+ */
-    dirnp=NULL;
-    while(!feof(cf))
+    else
     {
-      p=fgets(buffer,sizeof(buffer)-1,cf);
-      /* empty file? ok, we'll ignore it */
-      if (!p)
-	break;
-      
-      if (!strncmp(buffer,"QUEUEDIR",sizeof("QUEUEDIR")-1))
+      /* scan the lines for ^QUEUEDIR\s+ */
+      dirnp=NULL;
+      while(!feof(cf))
       {
-	p=buffer+sizeof("QUEUEDIR")-1;
-	for(;*p && isspace(*p);++p)
-	  ;
-	if (*p)
+	p=fgets(buffer,sizeof(buffer)-1,cf);
+	/* empty file? ok, we'll ignore it */
+	if (!p)
+	  break;
+	
+	if (!strncmp(buffer,"QUEUEDIR",sizeof("QUEUEDIR")-1))
 	{
-	  dirnp=p;
-	  /* strip the newline from the string */
-	  for(;*p && *p != '\n';++p)
+	  p=buffer+sizeof("QUEUEDIR")-1;
+	  for(;*p && isspace(*p);++p)
 	    ;
-	  if (*p == '\n')
-	    *p=0;
-	  /* strip eventual trailing whitespace */
-	  for(--p;p>dirnp && isspace(*p);--p)
-	    *p=0;
+	  if (*p)
+	  {
+	    dirnp=p;
+	    /* strip the newline from the string */
+	    for(;*p && *p != '\n';++p)
+	      ;
+	    if (*p == '\n')
+	      *p=0;
+	    /* strip eventual trailing whitespace */
+	    for(--p;p>dirnp && isspace(*p);--p)
+	      *p=0;
+	  }
+	  /* empty dir? ignore it */
+	  if (strlen(dirnp)<2)
+	    dirnp=NULL;
+	  break;
 	}
-	/* empty dir? ignore it */
-	if (strlen(dirnp)<2)
-	  dirnp=NULL;
-	break;
       }
+      fclose(cf);
     }
-    fclose(cf);
   }
 
   /* fallback to sendmail requested? */
