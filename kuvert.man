@@ -5,7 +5,8 @@
 kuvert \- automatically sign and/or encrypt mail based on the recipients
 .Sh SYNOPSIS
 .Nm kuvert
-.Op Fl d | Fl b
+.Op Fl d 
+.Op Fl b
 .Op Fl r | Fl k | Fl n | Fl v
 .Sh DESCRIPTION
 .Nm kuvert 
@@ -32,14 +33,15 @@ This is done by sending a SIGUSR1 to the running process.
 The option
 .Fl d
 activates debugging output to syslog.
+.Nm kuvert 
+does not fork when in debugging mode and processes just the
+first mail in the queue, after which it terminates.
+.Pp
 If the option 
 .Fl b
 is given, then 
 .Nm kuvert
 will send an error mail to the user whenever fatal errors are encountered.
-.Nm kuvert 
-does not fork when in debugging mode and processes just the
-first mail in the queue, after which it terminates.
 .Pp
 The option
 .Fl k
