@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.10 2003/02/22 04:57:58 az Exp az $
+#   $Id: kuvert,v 2.11 2003/04/25 07:52:15 az Exp az $
 #--
 
 use strict;
@@ -318,6 +318,14 @@ sub process_file
 
     my $orig_header;
     my $input="$config{tempdir}/.input";
+
+    # take care of raw mails, before mangling the headers
+    my @recips=grep($actions{$_} eq "none",keys %actions);
+    if (@recips)
+    {
+	logit("sending mail (raw) to ".join(",",@recips));
+	&send_entity($in_ent,@recips);
+    }
     
     # prepare various stuff we need only when encrypting or signing
     if(grep(/(ng|std)/,values(%actions)))
@@ -364,17 +372,11 @@ sub process_file
 	close(F);
     }
 
-    foreach my $action qw(none ng ngsign std stdsign bcc-ng bcc-std)
+    foreach my $action qw(ng ngsign std stdsign bcc-ng bcc-std)
     {
 	my @recips=grep($actions{$_} eq $action,keys %actions);
 	next if (!@recips);
 
-	if ($action eq "none")
-	{
-	    logit("sending mail (raw) to ".join(",",@recips));
-	    &send_entity($in_ent,@recips);
-	    next;
-	}
 	my $type=($action=~/ng/?"ng":"std");
 
 	if ($action=~/bcc/)
