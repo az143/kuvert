@@ -231,6 +231,26 @@ Encrypt with new-style, old-style or just sign with new-style.
 If there is a new-style key of the recipient known, encrypt and sign with
 this key, else if there is an old-style key, encrypt and sign with this
 key. Otherwise just sign with the owner's new-style key.
+.It Ar none-force
+Force no encryption/signing for all recipients of this mail.
+.It Ar fallback-force
+Force a fallback-type action for all recipients of this mail: encrypt and sign with new-style or old-style pgp if keys for 
+.Em all 
+recipients are available or sign with new-style pgp. Note that a mixture of
+old-style and new-style encryption is possible here.
+.It Ar ngsign-force "," stdsign-force
+Sign only for all recipients, with new-style or old style pgp respectively.
+.It Ar ng-force
+Encrypt and sign for all recipients of this mail if there is a new-style key
+available for all of them, otherwise just sign for all of them using
+new-style pgp. The difference between this action
+and 
+.Ar fallback-force
+is that there's no mixing of old-style and new-style pgp possible here.
+.It Ar std-force
+like 
+.Ar ng-force ","
+but with old-style pgp.
 .El
 .Pp
 Additionally, you can specify an override for a single mail by
@@ -243,6 +263,15 @@ file. Before final sending an email
 .Nm kuvert
 will remove
 any existing override header from the email.
+.Pp
+The various
+.Ar -force 
+actions are intended for users who want to avoid sending cleartext (signed)
+and encrypted variants of the same mail to different recipients: You can 
+either turn off encryption or signing completely, or use the maximum
+amount of privacy that is possible for a given set of recipients by checking
+for keys for everybody before deciding whether to encrypt or just sign.
+.Sy Please note: the first occurrence of a -force action overrides all possible other occurrences
 .Sh FILES
 .Bl -tag
 .It Pa ~/.kuvert
@@ -281,3 +310,7 @@ and
 .Pp
 .Ql Bcc:
 is not interpreted by kuvert at the moment.
+.Pp
+Multiple -force actions won't work.
+
+
