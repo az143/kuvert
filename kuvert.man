@@ -1,4 +1,4 @@
-.Dd December 12, 2001
+.Dd January 31, 2002
 .Dt KUVERT 1
 .Os Unix
 .Sh NAME
@@ -149,7 +149,7 @@ old-style encryption/signatures. If it is 0,
 .Nm kuvert
 will use gpg in a 
 compatibility mode to produce the old-style stuff. Please note: gpg needs
-the gnupg-extensions rsa and idea for this compatibility mode.
+the gnupg-extension gpg-idea for this compatibility mode.
 Default: 0
 .It Ar AGENTPATH Pa path
 defines the quintuple-agent binary (see 
