@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.14 2002/02/05 23:44:47 az Exp az $
+#   $Id: kuvert,v 1.15 2002/02/16 12:02:54 az Exp az $
 #--
 
 use strict;
@@ -1022,7 +1022,7 @@ sub send_bounce
     my ($res,$file)=@_;
 
     open(F,"|$mta -t") || return;
-    print F "From: $progname <$name>\nTo: <$name>\nSubject: Mail Send Failure\n\n";
+    print F "From: $name ($progname)\nTo: $name\nSubject: Mail Send Failure\n\n";
     print F "your mail $queuedir/$file could not be sent to some or all"
 	." recipients.\nthe detailed error message was:\n\n";
     print F "$res\n";
