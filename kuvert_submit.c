@@ -1,5 +1,5 @@
 /*
- * $Id: uard_mta_wrapper.c,v 2.4 2001/10/07 12:32:28 az Exp az $
+ * $Id: kuvert_mta_wrapper.c,v 1.1 2001/11/06 13:00:44 az Exp az $
  * 
  * this file is part of kuvert, a wrapper around your mta that
  * does pgp/gpg signing/signing+encrypting transparently, based
@@ -60,13 +60,13 @@ int main(int argc,char **argv)
 
   /* scan the arguments for options:
      we understand about: no options, non-option-args, --,
-     -bm, -f, -i, -t, -v, -m. everything else means some special
+     -bm, -f, -i, -t, -v, -m, -oi, -d*, -e*. everything else means some special
      instruction to sendmail, so we exec sendmail. */
 
   /* no getopt error messages, please! */
   opterr=0;
 
-  while ((c=getopt(argc,argv,"f:itvb:m"))!=-1 && !fallback)
+  while ((c=getopt(argc,argv,"f:itvb:mo:"))!=-1 && !fallback)
   {
     switch (c)
     {
@@ -83,7 +83,17 @@ int main(int argc,char **argv)
       {
 	fallback=1;
 	syslog(LOG_INFO,"option '-%c %s' mandates fallback",
-	       c,optarg);
+	       c,optarg ? optarg : "");
+      }
+      break;
+    case 'o':
+      /* -oi, -e*, -d* are ok */
+      if (!optarg || (*optarg != 'i' && *optarg != 'e' 
+		      && *optarg != 'd'))
+      {
+	fallback=1;
+	syslog(LOG_INFO,"option '-%c %s' mandates fallback",
+	       c,optarg ? optarg : "");
       }
       break;
     default:
