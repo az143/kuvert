@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.24 2002/09/19 16:25:46 az Exp az $
+#   $Id: kuvert,v 1.25 2002/09/19 16:43:25 az Exp az $
 #--
 
 use strict;
@@ -1265,8 +1265,7 @@ sub gpg_crypt
 	}
 
 	# and finally encrypt all this for the wanted recipients.
-	$cmd="$GPG --no-options --load-extension idea "
-	    ."--no-literal --encrypt --rfc1991 --cipher-algo idea "
+	$cmd="$GPG --no-literal --encrypt --rfc1991 --cipher-algo idea "
 		.($alwaystrust?"--always-trust ":"")
 		."--armor -o $outfile -r "
 		    .join(" -r ",@recipients)
