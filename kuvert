@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.5 2001/11/11 11:41:05 az Exp az $
+#   $Id: kuvert,v 1.6 2001/11/25 11:39:53 az Exp az $
 #--
 
 use strict;
@@ -31,7 +31,6 @@ use Getopt::Std;
 use MIME::Parser;		# for parsing the mime-stream
 use Mail::Address;		# for parsing to and cc-headers
 
-use Time::Local;
 use FileHandle;
 
 my %options;
@@ -174,7 +173,7 @@ if (!flock(PIDF,LOCK_NB|LOCK_EX))
 # get the list of known keys and the configuration-stuff,
 # setup the queuedir and tempdir
 # the hup-handler does this
-handle_hup();
+handle_reload();
 
 # cleanup tempdir
 my $res;
@@ -1340,6 +1339,8 @@ sub gpg_crypt
 sub gpg_listkeys_norsa
 {
     my (%ngkeys,$lastkey,@tmp,@info,$now);
+    my %badcauses=('i'=>'invalid, no selfsig','d'=>'disabled',
+		   'r'=>'revoked','e'=>'expired');
 
     $now=time;
 
@@ -1365,16 +1366,13 @@ sub gpg_listkeys_norsa
 	    next;
 	}
 	
-	# ignore expired keys
-	if ($info[6] && $info[6]=~/^(\d+)-(\d+)-(\d+)$/)
+	# ignore expired, revoked and other bad keys
+	if (defined $badcauses{$info[1]})
 	{
-	    # yyyy-mm-dd
-	    if (timegm(0,0,0,$3,$2-1,$1-1900)<$now)
-	    {
-		&logit("ignoring expired DSA key 0x$info[4]");
-		undef $lastkey;	# uids have no expiry, still BSTS...
-		next;
-	    }
+	    &logit("ignoring DSA key 0x$info[4], reason: "
+		   .$badcauses{$info[1]});
+	    undef $lastkey;	# uids have no expiry, still BSTS...
+	    next;
 	}
 
 	# fixme lowprio: more general unquote
@@ -1451,6 +1449,8 @@ sub gpg_listkeys_norsa
 sub gpg_listkeys_rsa
 {
     my (%stdkeys,$lastkey,@tmp,@info,$now);
+    my %badcauses=('i'=>'invalid, no selfsig','d'=>'disabled',
+		   'r'=>'revoked','e'=>'expired');
 
     $now=time;
 
@@ -1476,16 +1476,13 @@ sub gpg_listkeys_rsa
 	    next;
 	}
 
-	# ignore expired keys
-	if ($info[6] && $info[6]=~/^(\d+)-(\d+)-(\d+)$/)
+	# ignore expired, revoked and other bad keys
+	if (defined $badcauses{$info[1]})
 	{
-	    # yyyy-mm-dd
-	    if (timegm(0,0,0,$3,$2-1,$1-1900)<$now)
-	    {
-		&logit("ignoring expired RSA key 0x$info[4]");
-		undef $lastkey;	# uids have no expiry, still BSTS...
-		next;
-	    }
+	    &logit("ignoring RSA key 0x$info[4], reason: "
+		   .$badcauses{$info[1]});
+	    undef $lastkey;	# uids have no expiry, still BSTS...
+	    next;
 	}
 
 	# fixme lowprio: general unquote
