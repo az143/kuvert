@@ -274,10 +274,10 @@ Never encrypt, just sign using the owner's old-style key.
 .It Ar ngsign
 Never encrypt, just sign using the owner's new-style key.
 .It Ar fallback
-Encrypt with new-style, old-style or just sign with new-style.
+Encrypt with new-style, old-style or sign with new-style (or std-style if no new-style private key is available).
 If there is a new-style key of the recipient known, encrypt and sign with
 this key, else if there is an old-style key, encrypt and sign with this
-key. Otherwise just sign with the owner's new-style key.
+key. Otherwise just sign with the owner's new-style key or (as last resort) the old-style key.
 .It Ar none-force
 Force no encryption/signing for all recipients of this mail.
 .It Ar fallback-force
