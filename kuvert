@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.25 2002/09/19 16:43:25 az Exp az $
+#   $Id: kuvert,v 1.26 2002/09/25 12:12:32 az Exp az $
 #--
 
 use strict;
@@ -697,12 +697,172 @@ sub handle_reload
 }
 
 # read keyrings into global hashes
+# note: this must happen after the config is read, so that
+# the right tools are used (gpg vs. pgp)
 sub read_keyrings
 {
-    logit("reading std keyring.");
-    %stdkeys=&std_listkeys;
-    logit("reading ng keyring.");
-    %ngkeys=&ng_listkeys;
+    my ($lastkey,@tmp,$name,$now,@info);
+    my %badcauses=('i'=>'invalid, no selfsig','d'=>'disabled',
+		   'r'=>'revoked','e'=>'expired');
+    %stdkeys=();
+
+    if ($use_pgp)
+    {
+	logit("reading std keyring.");
+	$now=time;
+
+	#get the keys and dump the trailer and header lines
+	# this does not care if pgp is not existent...but then, we're not
+	# needing the pgp keyring
+	@tmp=`$PGP -kv 2>$tempdir/subprocess`;
+	foreach (@tmp)
+	{
+	    if (/^pub\s+\d+\/(\S+)\s+(.+)$/)
+	    {
+		my ($key,$userspec)=($1,$2);
+		
+		if ($userspec =~ /<(.+)>/)
+		{
+		    $name=lc($1);
+		}
+		else
+		{
+		    undef $name;
+		}
+		
+		if ($name)
+		{
+		    $stdkeys{$name}="0x$key";
+		    $lastkey=$key;
+		    &logit("got stdkey 0x$key for $name") if ($debug);
+		}
+		else
+		{
+		    $lastkey=$key;
+		    &logit("saved stdkey 0x$key, no address known yet")
+			if ($debug);
+		}
+		next;
+	    }
+	    if (/^\s+.*<(\S+)>\s*$/)
+	    {
+		my $name=lc($1);
+		$stdkeys{$name}="0x$lastkey";
+		&logit("got stdkey (uid) 0x$lastkey for $name") if ($debug);
+	    }
+	}
+	logit("reading ng keyring.");
+    }
+    logit("reading combined keyring.") if (!$use_pgp);
+
+    %ngkeys=();
+    
+    # this does not care if gpg is not existent...but then, we're not
+    # needing the gpg keyring
+    @tmp=`$GPG -q --batch --list-keys --with-colons --no-expensive-trust-checks 2>$tempdir/subprocess`;
+    foreach (@tmp)
+    {
+	@info=split(/:/);
+	# only public keys and uids are of interest
+	next if ($info[0] ne "pub" && $info[0] ne "uid");
+
+	$info[4] =~ s/^.{8}//;	# truncate key-id
+
+	# rsa-keys only if !$use_pgp
+	# and be sure to skip these uid's, too
+	if ($use_pgp && $info[3] eq "1")
+	{
+	    &logit("ignoring stdkey 0x$info[4]") if ($debug);
+	    undef $lastkey;
+	    next;
+	}
+	
+	# fixme lowprio: more general unquote
+	$info[9] =~ s/\\x3a/:/g; # re-insert colons, please
+
+	# remember the email address
+	# if no address given: remember this key 
+	# but go on to the uid's to get an email address to
+	# work with
+	if ($info[9] =~ /<(.+)>/)
+	{
+	    $name=lc($1);
+	}
+	else
+	{
+	    undef $name;
+	}
+	
+	# check the key: public part or uid?
+	if ($info[0] eq "pub")
+	{
+	    # lets associate this key with the current email address
+	    # if an address is known
+	    $lastkey=$info[4];
+
+	    if ($name)
+	    {
+		# ignore expired, revoked and other bad keys
+		if (defined $badcauses{$info[1]})
+		{
+		    &logit("ignoring ".($info[3]==1?"std":"ng")
+			   ." key 0x$info[4], reason: "
+			   .$badcauses{$info[1]});
+		    next;
+		}
+
+		$ngkeys{$name}="0x$lastkey";
+		
+		&logit("got ".($info[3]==1?"std":"ng")
+		       ." key 0x$lastkey for $name")
+		    if ($debug);
+	    }
+	    else
+	    {
+		&logit("saved ".($info[3]==1?"std":"ng")
+		       ." key 0x$lastkey, no address known yet")
+		    if ($debug);
+	    }
+	    next;
+	}
+	else
+	{
+	    # uid: associate the current address with the key 
+	    # given in the most recent public key line
+	    # if no such key saved: the pub key was an rsa key &
+	    # we're set to ignore those
+	    if (!$lastkey)
+	    {
+		$name="<no valid address>" if (!$name);
+		&logit("ignoring uid $name, belongs to std key?")
+		    if ($debug);
+	    }
+	    else
+	    {
+		if ($name)
+		{
+		    # ignore expired, revoked and other bad keys
+		    if (defined $badcauses{$info[1]})
+		    {
+			&logit("ignoring ".($info[3]==1?"std":"ng")
+			       ." uid $name for 0x$lastkey, "
+			       ."reason: ".$badcauses{$info[1]});
+			next;
+		    }
+
+		    $ngkeys{$name}="0x$lastkey";
+		    &logit("got ".($info[3]==1?"std":"ng")
+			   ." key (uid) 0x$lastkey for $name")
+			if ($debug);
+		}
+		else
+		{
+		    &logit("ignoring uid without valid address")
+			if ($debug);
+		}
+	    }
+	}
+    }
 }
 
 sub read_config
@@ -945,12 +1105,6 @@ sub send_bounce
     close F;
 }
 
-# list the public keys in the usual keyrings
-# returns: hash of (address,keyid)
-sub std_listkeys { if ($use_pgp) { return &pgp_listkeys; }
-		   else { return &gpg_listkeys_rsa; } }
-sub ng_listkeys { return &gpg_listkeys_norsa; }
-
 # sign a infile and write it to outfile
 # args: infile,outfile
 sub std_sign
@@ -983,59 +1137,6 @@ sub std_crypt
 }
 sub ng_crypt  { return &gpg_crypt($ng_defkey,@_); }
 
-
-# setup for std pgp  (rsa/idea, 2.6.*)
-# returns: hash of address,key
-sub pgp_listkeys
-{
-    my (%stdkeys,$lastkey,@tmp);
-
-    #get the keys and dump the trailer and header lines
-    %stdkeys=();
-    # this does not care if pgp is not existent...but then, we're not
-    # needing the pgp keyring
-    @tmp=`$PGP -kv 2>$tempdir/subprocess`;
-    foreach (@tmp)
-    {
-	my $name;
-	
-	if (/^pub\s+\d+\/(\S+)\s+(.+)$/)
-	{
-	    my $userspec=$2;
-	    my $key=$1;
-	    
-	    if ($userspec =~ /<(.+)>/)
-	    {
-		$name=lc($1);
-	    }
-	    else
-	    {
-		undef $name;
-	    }
-
-	    if ($name)
-	    {
-		$stdkeys{$name}="0x$key";
-		$lastkey=$key;
-		&logit("got stdkey 0x$key for $name") if ($debug);
-	    }
-	    else
-	    {
-		$lastkey=$key;
-		&logit("saved stdkey 0x$key, no address known yet")
-		    if ($debug);
-	    }
-	    next;
-	}
-	if (/^\s+.*<(\S+)>\s*$/)
-	{
-	    my $name=lc($1);
-	    $stdkeys{$name}="0x$lastkey";
-	    &logit("got stdkey (uid) 0x$lastkey for $name") if ($debug);
-	}
-    }
-    return %stdkeys;
-}
 
 # generate detached signature
 # input: filename_in,filename_out,extra_args
@@ -1306,237 +1407,6 @@ sub gpg_crypt
 	$? >>= 8;
 	return "gpg returned $?\n".join("\n",@result);
     }
-}
-
-# list keys
-# returns: hash of address,key
-sub gpg_listkeys_norsa
-{
-    my (%ngkeys,$lastkey,@tmp,@info,$now);
-    my %badcauses=('i'=>'invalid, no selfsig','d'=>'disabled',
-		   'r'=>'revoked','e'=>'expired');
-
-    $now=time;
-
-    # this does not care if gpg is not existent...but then, we're not
-    # needing the gpg keyring
-    @tmp=`$GPG -q --batch --list-keys --with-colons --no-expensive-trust-checks 2>$tempdir/subprocess`;
-    foreach (@tmp)
-    {
-	my $name;
-
-	@info=split(/:/);
-	# only public keys and uids are of interest
-	next if ($info[0] ne "pub" && $info[0] ne "uid");
-
-	$info[4] =~ s/^.{8}//;	# truncate key-id
-
-	# no rsa-keys, please
-	# and be sure to skip these uid's, too
-	if ($info[3] eq "1")
-	{
-	    &logit("ignoring rsa key 0x$info[4]") if ($debug);
-	    undef $lastkey;
-	    next;
-	}
-	
-	# fixme lowprio: more general unquote
-	$info[9] =~ s/\\x3a/:/g; # re-insert colons, please
-
-	# remember the email address
-	# if no address given: remember this key 
-	# but go on to the uid's to get an email address to
-	# work with
-	if ($info[9] =~ /<(.+)>/)
-	{
-	    $name=lc($1);
-	}
-	else
-	{
-	    undef $name;
-	}
-	
-	# check the key: public part or uid?
-	if ($info[0] eq "pub")
-	{
-	    # lets associate this key with the current email address
-	    # if an address is known
-	    $lastkey=$info[4];
-
-	    if ($name)
-	    {
-		# ignore expired, revoked and other bad keys
-		if (defined $badcauses{$info[1]})
-		{
-		    &logit("ignoring DSA key 0x$info[4], reason: "
-			   .$badcauses{$info[1]});
-		    next;
-		}
-
-		$ngkeys{$name}="0x$lastkey";
-		
-		&logit("got ngkey 0x$lastkey for $name")
-		    if ($debug);
-	    }
-	    else
-	    {
-		&logit("saved ngkey 0x$lastkey, no address known yet")
-		    if ($debug);
-	    }
-	    next;
-	}
-	else
-	{
-	    # uid: associate the current address with the key 
-	    # given in the most recent public key line
-	    # if no such key saved: the pub key was an rsa key &
-	    # we're set to ignore those
-	    if (!$lastkey)
-	    {
-		$name="<no valid address>" if (!$name);
-		&logit("ignoring uid $name, belongs to rsa key")
-		    if ($debug);
-	    }
-	    else
-	    {
-		if ($name)
-		{
-		    # ignore expired, revoked and other bad keys
-		    if (defined $badcauses{$info[1]})
-		    {
-			&logit("ignoring DSA uid $name for 0x$lastkey, "
-			       ."reason: ".$badcauses{$info[1]});
-			next;
-		    }
-
-		    $ngkeys{$name}="0x$lastkey";
-		    &logit("got ngkey (uid) 0x$lastkey for $name")
-			if ($debug);
-		}
-		else
-		{
-		    &logit("ignoring uid without valid address")
-			if ($debug);
-
-		}
-	    }
-	}
-    }
-    return %ngkeys;
-}
-
-# list keys
-# returns: hash of address,key
-sub gpg_listkeys_rsa
-{
-    my (%stdkeys,$lastkey,@tmp,@info,$now);
-    my %badcauses=('i'=>'invalid, no selfsig','d'=>'disabled',
-		   'r'=>'revoked','e'=>'expired');
-
-    $now=time;
-
-    # this does not care if gpg is not existent...but then, we're not
-    # needing the gpg keyring
-    @tmp=`$GPG -q --batch --list-keys --with-colons --no-expensive-trust-checks 2>$tempdir/subprocess`;
-    foreach (@tmp)
-    {
-	my $name;
-
-	@info=split(/:/);
-	# only public keys and uids are of interest
-	next if ($info[0] ne "pub" && $info[0] ne "uid");
-
-	$info[4] =~ s/^.{8}//;	# truncate key-id
-
-	# no dsa/elg-keys, please
-	# and be sure to skip these uid's, too
-	if ($info[3] > 1)
-	{
-	    &logit("ignoring dsa/elg key 0x$info[4]") if ($debug);
-	    undef $lastkey;
-	    next;
-	}
-
-	# fixme lowprio: general unquote
-	$info[9] =~ s/\\x3a/:/g; # re-insert colons, please
-
-	# remember the email address
-	# if no address given: remember this key 
-	# but go on to the uid's to get an email address to
-	# work with
-	if ($info[9] =~ /<(.+)>/)
-	{
-	    $name=lc($1);
-	}
-	else
-	{
-	    undef $name;
-	}
-
-	if ($info[0] eq "pub")
-	{
-	    $lastkey=$info[4];
-
-	    # ignore expired, revoked and other bad keys
-	    if (defined $badcauses{$info[1]})
-	    {
-		&logit("ignoring RSA key 0x$info[4], reason: "
-		       .$badcauses{$info[1]});
-		next;
-	    }
-	    
-	    if ($name)
-	    {
-		$stdkeys{$name}="0x$lastkey";
-		
-		&logit("got stdkey 0x$lastkey for $name")
-		    if ($debug);
-	    }
-	    else
-	    {
-		&logit("saved stdkey 0x$lastkey, no address known yet")
-		    if ($debug);
-	    }
-	    next;
-	}
-	else
-	{
-	    # uid: associate the current address with the key 
-	    # given in the most recent public key line
-	    # if no such key saved: the pub key was an dsa key &
-	    # we're set to ignore those
-	    if (!$lastkey)
-	    {
-		$name="<no valid address>" if (!$name);
-		&logit("ignoring uid $name, belongs to dsa/elg key")
-		    if ($debug);
-	    }
-	    else
-	    {
-		if ($name)
-		{
-
-		    # ignore expired, revoked and other bad keys
-		    if (defined $badcauses{$info[1]})
-		    {
-			&logit("ignoring RSA uid $name for 0x$lastkey, "
-			       ."reason: ".$badcauses{$info[1]});
-			next;
-		    }
-
-		    $stdkeys{$name}="0x$lastkey";
-		    &logit("got stdkey (uid) 0x$lastkey for $name")
-			if ($debug);
-		}
-		else
-		{
-		    &logit("ignoring uid without valid address")
-			if ($debug);
-		}
-	    }
-	}
-    }
-    return %stdkeys;
 }
 
 # get and store a secret
