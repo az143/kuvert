@@ -9,10 +9,13 @@ kuvert-mta-wrapper \- wrapper around your MTA for mail submission to
 .Op Fl options 
 .Op Ar args
 .Sh DESCRIPTION
-kuvert_mta_wrapper submits an email either directly to your MTA or
+.Nm kuvert_mta_wrapper
+submits an email either directly to your MTA or
 enqueues it for 
 .Xr kuvert 1
-for further processing. kuvert_mta_wrapper should be called by your MUA
+for further processing. 
+.Nm kuvert_mta_wrapper
+should be called by your MUA
 instead of your usual MTA in order to enable kuvert to intercept and
 process the outgoing mails. Please see your MUA's documentation about
 how to override the MTA to be used.
@@ -22,14 +25,14 @@ the following factors:
 .Bl -enum
 .It 
 If there are options given other than 
-.Op Fl "bm",
-.Op Fl "f",
-.Op Fl "i",
-.Op Fl "t",
-.Op Fl "v",
-.Op Fl "oi",
-.Op Fl "od",
-.Op Fl "oe",
+.Fl "bm",
+.Fl "f",
+.Fl "i",
+.Fl "t",
+.Fl "v",
+.Fl "oi",
+.Fl "od",
+.Fl "oe",
 the standard MTA 
 .Pa /usr/lib/sendmail
 is executed with the options and arguments given. The result code in this case
@@ -58,3 +61,5 @@ the default queue directory for
 .An Alexander Zangerl <az@snafu.priv.at>
 .Sh BUGS
 The list of allowed options and the MTA for fallback are set at compile time.
+.Nm kuvert_mta_wrapper
+does log only to syslog at the moment.
