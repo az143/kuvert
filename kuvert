@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.11 2002/01/27 12:32:31 az Exp az $
+#   $Id: kuvert,v 1.12 2002/01/30 13:36:38 az Exp az $
 #--
 
 use strict;
@@ -34,11 +34,20 @@ use Mail::Address;		# for parsing to and cc-headers
 use FileHandle;
 
 my %options;
-if (!getopts("dkrn",\%options) || @ARGV)
+if (!getopts("dkrnv",\%options) || @ARGV)
 {
-    print "usage: $0 [-n] [-d] | [-k] | [-r] \n-k: kill running $0\n"
-	."-d: debug mode\n-r: reload keyrings and configfile\n-n don't fork\n";
+    print "usage: $0 [-n] [-d] [-v] | [-k] | [-r] \n-k: kill running $0\n"
+	."-d: debug mode\n-r: reload keyrings and configfile\n-n don't fork\n-v: output version and exit\n";
     exit 1;
+}
+
+# manually updated...not perfect
+my $version="1.0.5";
+
+if ($options{'v'})
+{
+    print STDERR "kuvert $version\n";
+    exit 0;
 }
 
 # who are we gonna pretend to be today?
@@ -154,6 +163,8 @@ if ($options{"k"} || $options{"r"})
     unlink $pidf if ($options{"k"});
     exit 0;
 }
+
+logit("version $version starting");
 
 # and now for some real work...
 if (-f "$pidf")			# retain content of pidf, in case we cant lock it
