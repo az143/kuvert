@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.6 2001/11/25 11:39:53 az Exp az $
+#   $Id: kuvert,v 1.7 2001/12/12 13:31:02 az Exp az $
 #--
 
 use strict;
@@ -334,12 +334,54 @@ sub process_file
     }
 
     my (@recip_none,@recip_sign_std,@recip_sign_ng,
-	@recip_crypt_std,@recip_crypt_ng);
+	@recip_crypt_std,@recip_crypt_ng,@recip_all);
+    # save all recipients, necessary for override-handling
+    map { push @recip_all, lc($_->address); }  Mail::Address->parse($in_ent->head->get("To"),
+								    $in_ent->head->get("Cc"));
 
-    foreach (Mail::Address->parse($in_ent->head->get("To"),
-				       $in_ent->head->get("Cc")))
+    # check if there is one with an override in there
+    # but only if there's no custom header already
+    if (!$custom_conf)
     {
-	my $tmp=lc($_->address);
+	foreach (@recip_all)
+	{
+	    if (grep($_,@configkeys))
+	    {
+		if ($config{$_} =~ 
+		    /^((std|ng)(sign)?|none|fallback)-force$/)
+		{
+		    $custom_conf=$config{$_};
+		    logit("found override $custom_conf for $_");
+		    last;		# more than one override -> undefined...
+		}
+	    }
+	}
+    }
+    # handle -force options:
+    $custom_conf =~ s/^(none|stdsign|ngsign)-force$/$1/;
+
+    # fallback to signing if not all recipients have keys of any kind
+    if ($custom_conf eq "fallback-force")
+    {	
+	$custom_conf="fallback";
+	$custom_conf="ngsign" 	
+	    if (grep(!exists $ngkeys{$_} && !exists $stdkeys{$_}, @recip_all));
+    }
+    elsif ($custom_conf eq "ng-force")
+    {
+	$custom_conf="ng";
+	$custom_conf="ngsign"
+	    if (grep(!exists $ngkeys{$_}, @recip_all));
+    }
+    elsif ($custom_conf eq "std-force")
+    {
+	$custom_conf="std";
+	$custom_conf="stdsign"
+	    if (grep(!exists $stdkeys{$_}, @recip_all));
+    }
+
+    foreach my $tmp (@recip_all)
+    {
 	my $key="";
 	my $value="";
 
@@ -431,7 +473,7 @@ sub process_file
     if (!@recip_crypt_ng && !@recip_crypt_std && !@recip_sign_ng
 	&& !@recip_sign_std && !@recip_none)
     {
-	return "no recipients found! the mail header seems to be garbled.";
+	return "no recipients found! the mail headers seem to be garbled.";
     }
 
 
@@ -1369,9 +1411,9 @@ sub gpg_listkeys_norsa
 	# ignore expired, revoked and other bad keys
 	if (defined $badcauses{$info[1]})
 	{
-	    &logit("ignoring DSA key 0x$info[4], reason: "
+	    &logit("ignoring DSA ".
+		   ($info[0] eq "pub"? "key 0x$info[4]":"uid 0x$lastkey")." reason: "
 		   .$badcauses{$info[1]});
-	    undef $lastkey;	# uids have no expiry, still BSTS...
 	    next;
 	}
 
@@ -1481,7 +1523,6 @@ sub gpg_listkeys_rsa
 	{
 	    &logit("ignoring RSA key 0x$info[4], reason: "
 		   .$badcauses{$info[1]});
-	    undef $lastkey;	# uids have no expiry, still BSTS...
 	    next;
 	}
 
