@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.8 2003/02/16 13:42:10 az Exp az $
+#   $Id: kuvert,v 2.9 2003/02/21 11:41:06 az Exp az $
 #--
 
 use strict;
@@ -268,7 +268,7 @@ sub process_file
 	if ($@);
 
     # add version header
-    $in_ent->head->add('X-mailer',"$progname $version")
+    $in_ent->head->add('X-Mailer',"$progname $version")
 	if ($config{identify});
 
     # extract and delete instruction header
@@ -819,7 +819,7 @@ sub read_config
 		 queuedir=>"$home/.kuvert_queue",
 		 logfile=>undef,
 		 logfh=>undef,
-		 identify=0);
+		 identify=>0);
     
     &bailout("cant open $rcfile: $! -- exiting")
 	if (!open (F,$rcfile));
