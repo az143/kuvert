@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.18 2002/04/25 14:31:58 az Exp az $
+#   $Id: kuvert,v 1.19 2002/04/26 02:11:33 az Exp az $
 #--
 
 use strict;
@@ -1868,7 +1868,7 @@ sub findaction
 	if ($actions{$addr} eq "fallback")
 	{
 	    ($ngkeys{$addr} && ($actions{$addr}="ng")) 
-		|| ($ngkeys{$addr} && ($actions{$addr}="std"))
+		|| ($stdkeys{$addr} && ($actions{$addr}="std"))
 		|| ($actions{$addr}="ngsign");
 	}
 	elsif ($actions{$addr} eq "ng")
