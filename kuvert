@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.0 2003/01/12 14:05:48 az Exp az $
+#   $Id: kuvert,v 2.1 2003/01/12 15:21:03 az Exp az $
 #--
 
 use strict;
@@ -215,7 +215,7 @@ sub main
 	    if ($@)
 	    {
 		rename("$config{queuedir}/$file","$config{queuedir}/.$file")
-		    && &bailout("cant rename $config{queuedir}/$file: $!");
+		    || &bailout("cant rename $config{queuedir}/$file: $!");
 		logit("problem \"$@\" processing $file,"
 		      ." left as \".$file\".\n");
 		send_bounce($@,$file);
@@ -224,7 +224,7 @@ sub main
 	    {
 		logit("done with file $file");
 		unlink("$config{queuedir}/$file")
-		    && &bailout("cant unlink $config{queuedir}/$file: $!");
+		    || &bailout("cant unlink $config{queuedir}/$file: $!");
 	    }
 	    # and clean up the cruft left behind, please!
 	    cleanup("$config{tempdir}",0);
@@ -356,6 +356,7 @@ sub process_file
     foreach my $action qw(none ng ngsign std stdsign bcc-ng bcc-std)
     {
 	my @recips=grep($actions{$_} eq $action,keys %actions);
+	next if (!@recips);
 
 	if ($action eq "none")
 	{
@@ -426,8 +427,21 @@ sub sign_send
     # generate the signature, repeat until proper passphrase given
     while (&sign_encrypt(0,$type,$dumpfile,$output,undef))
     {
-	# unless we can't query for the passphrase...
-	bailout("bad passphrase, but no passphrase agent to query!") if (!$config{secretondemand});
+	# get rid of broken passphrase and lets try again
+	if ($config{use_agent})
+	{
+	    $debug && logit("bad passphrase, retry");
+	    my $res=0xffff & system("$config{clientpath} delete "
+				    .$config{$type."key"}." >$config{tempdir}/subproc 2>&1");
+	    bailout("error deleting broken passphrasee from agent: $res",
+		    "$config{tempdir}/subproc")
+		if ($res);		
+	}
+	else
+	{
+	    # bad passphrase but we're on our own -> cant recover
+	    bailout("bad passphrase, but no passphrase agent to query!");
+	}
     }
     # attach the signature
     $newent->attach(Type => "application/pgp-signature",
@@ -471,8 +485,21 @@ sub crypt_send
     # generate the encrypted data, repeat until proper passphrase given
     while (&sign_encrypt(1,$type,$dumpfile,$output,@{$rec_keys}))
     {
-	# unless we can't query for the passphrase...
-	bailout("bad passphrase, but no passphrase agent to query!") if (!$config{secretondemand});
+	# get rid of broken passphrase and lets try again
+	if ($config{use_agent})
+	{
+	    $debug && logit("bad passphrase, retry");
+	    my $res=0xffff & system("$config{clientpath} delete "
+				    .$config{$type."key"}." >$config{tempdir}/subproc 2>&1");
+	    bailout("error deleting broken passphrasee from agent: $res",
+		    "$config{tempdir}/subproc")
+		if ($res);		
+	}
+	else
+	{
+	    # bad passphrase but we're on our own -> cant recover
+	    bailout("bad passphrase, but no passphrase agent to query!");
+	}
     }
     
     # attach the encrypted data
@@ -571,170 +598,182 @@ sub handle_reload
 # the right tools are used (gpg vs. pgp)
 sub read_keyrings
 {
-    my ($lastkey,@tmp,$name,$now,@info);
+    my ($lastkey,$lasttype,@tmp,$name,$now,@info);
     my %badcauses=('i'=>'invalid, no selfsig','d'=>'disabled',
 		   'r'=>'revoked','e'=>'expired');
     %{$keys{std}}=();
 
-    if ($config{use_pgp})
+    if ($config{usepgp})
     {
-	logit("reading std keyring.");
-	$now=time;
+	if (!$config{stdkey})
+	{
+	    logit("ignoring std keyring, no key a/v.");
+	}
+	else
+	{
+	    logit("reading std keyring.");
+	    $now=time;
+	    
+	    #get the keys and dump the trailer and header lines
+	    # this does not care if pgp is not existent...but then, we're not
+	    # needing the pgp keyring
+	    @tmp=`$config{pgppath} -kv 2>$config{tempdir}/subproc`;
+	    bailout("failure reading keyring with $config{pgppath}: $?",
+		    "$config{tempdir}/subproc") if ($?);
+	    foreach (@tmp)
+	    {
+		if (/^pub\s+\d+\/(\S+)\s+(.+)$/)
+		{
+		    my ($key,$userspec)=($1,$2);
+		    
+		    if ($userspec =~ /(\s|<)([^\s<]+\@[^\s>]+)>?/)
+		    {
+			$name=lc($2);
+		    }
+		    else
+		    {
+			undef $name;
+		    }
+		    
+		    if ($name)
+		    {
+			$keys{std}->{$name}="0x$key";
+			$lastkey=$key;
+			&logit("got stdkey 0x$key for $name") if ($debug);
+		    }
+		    else
+		    {
+			$lastkey=$key;
+			&logit("saved stdkey 0x$key, no address known yet")
+			    if ($debug);
+		    }
+		    next;
+		}
+		if (/^\s+.*(\s|<)([^\s<]+\@[^\s>]+)>?\s*$/)
+		{
+		    my $name=lc($2);
+		    $keys{std}->{$name}="0x$lastkey";
+		    &logit("got stdkey (uid) 0x$lastkey for $name") if ($debug);
+		}
+	    }
+	}
+    }
 
-	#get the keys and dump the trailer and header lines
-	# this does not care if pgp is not existent...but then, we're not
-	# needing the pgp keyring
-	@tmp=`$config{pgppath} -kv 2>$config{tempdir}/subproc`;
-	bailout("failure reading keyring with $config{pgppath}: $?",
+    %{$keys{ng}}=();
+
+    if ($config{ngkey} || !$config{usepgp} && $config{stdkey})
+    {
+	logit("reading ".(!$config{usepgp} && $config{stdkey}?"combined":"ng")." keyring.");
+
+	# this does not care if gpg is not existent...but then, we're not
+	# needing the gpg keyring
+	@tmp=`$config{gpgpath} -q --batch --list-keys --with-colons --no-expensive-trust-checks 2>$config{tempdir}/subproc`;
+	bailout("failure reading keyring with $config{gpgpath}: $?",
 		"$config{tempdir}/subproc") if ($?);
 	foreach (@tmp)
 	{
-	    if (/^pub\s+\d+\/(\S+)\s+(.+)$/)
+	    @info=split(/:/);
+	    # only public keys and uids are of interest
+	    next if ($info[0] ne "pub" && $info[0] ne "uid");
+	    
+	    $info[4] =~ s/^.{8}//;	# truncate key-id
+	    
+	    # rsa-keys only if !$usepgp
+	    # and be sure to skip these uid's, too
+	    if ($config{usepgp} && $info[3] eq "1")
 	    {
-		my ($key,$userspec)=($1,$2);
-		
-		if ($userspec =~ /<?([^\s<]+\@[^\s>]+)>?/)
-		{
-		    $name=lc($1);
-		}
-		else
-		{
-		    undef $name;
-		}
-		
-		if ($name)
-		{
-		    $keys{std}->{$name}="0x$key";
-		    $lastkey=$key;
-		    &logit("got stdkey 0x$key for $name") if ($debug);
-		}
-		else
-		{
-		    $lastkey=$key;
-		    &logit("saved stdkey 0x$key, no address known yet")
-			if ($debug);
-		}
+		&logit("ignoring stdkey 0x$info[4]") if ($debug);
+		undef $lastkey;
 		next;
 	    }
-	    if (/^\s+.*<?([^\s<]+\@[^\s>]+)>?\s*$/)
+	    
+	    $info[9] =~ s/\\x3a/:/g; # re-insert colons, please
+	    
+	    # remember the email address
+	    # if no address given: remember this key 
+	    # but go on to the uid's to get an email address to
+	    # work with
+	    if ($info[9] =~ /(\s|<)([^\s<]+\@[^\s>]+)>?/)
 	    {
-		my $name=lc($1);
-		$keys{std}->{$name}="0x$lastkey";
-		&logit("got stdkey (uid) 0x$lastkey for $name") if ($debug);
+		$name=lc($2);
 	    }
-	}
-	logit("reading ng keyring.");
-    }
-    logit("reading combined keyring.") if (!$config{use_pgp});
-
-    %{$keys{ng}}=();
-    
-    # this does not care if gpg is not existent...but then, we're not
-    # needing the gpg keyring
-    @tmp=`$config{gpgpath} -q --batch --list-keys --with-colons --no-expensive-trust-checks 2>$config{tempdir}/subproc`;
-    bailout("failure reading keyring with $config{gpgpath}: $?",
-	    "$config{tempdir}/subproc") if ($?);
-    foreach (@tmp)
-    {
-	@info=split(/:/);
-	# only public keys and uids are of interest
-	next if ($info[0] ne "pub" && $info[0] ne "uid");
-
-	$info[4] =~ s/^.{8}//;	# truncate key-id
-
-	# rsa-keys only if !$use_pgp
-	# and be sure to skip these uid's, too
-	if ($config{use_pgp} && $info[3] eq "1")
-	{
-	    &logit("ignoring stdkey 0x$info[4]") if ($debug);
-	    undef $lastkey;
-	    next;
-	}
-	
-	$info[9] =~ s/\\x3a/:/g; # re-insert colons, please
-
-	# remember the email address
-	# if no address given: remember this key 
-	# but go on to the uid's to get an email address to
-	# work with
-	if ($info[9] =~ /<?([^\s<]+\@[^\s>]+)>?/)
-	{
-	    $name=lc($1);
-	}
-	else
-	{
-	    undef $name;
-	}
-	
-	# check the key: public part or uid?
-	if ($info[0] eq "pub")
-	{
-	    # lets associate this key with the current email address
-	    # if an address is known
-	    $lastkey=$info[4];
-
-	    if ($name)
+	    else
 	    {
-		# ignore expired, revoked and other bad keys
-		if (defined $badcauses{$info[1]})
-		{
-		    &logit("ignoring ".($info[3]==1?"std":"ng")
-			   ." key 0x$info[4], reason: "
-			   .$badcauses{$info[1]});
-		    next;
-		}
-
-		$keys{ng}->{$name}="0x$lastkey";
+		undef $name;
+	    }
+	    
+	    # check the key: public part or uid?
+	    if ($info[0] eq "pub")
+	    {
+		# lets associate this key with the current email address
+		# if an address is known
+		$lastkey=$info[4];
+		$lasttype=$info[3]==1?"std":"ng";
 		
-		&logit("got ".($info[3]==1?"std":"ng")
-		       ." key 0x$lastkey for $name")
-		    if ($debug);
-	    }
-	    else
-	    {
-		&logit("saved ".($info[3]==1?"std":"ng")
-		       ." key 0x$lastkey, no address known yet")
-		    if ($debug);
-	    }
-	    next;
-	}
-	else
-	{
-	    # uid: associate the current address with the key 
-	    # given in the most recent public key line
-	    # if no such key saved: the pub key was an rsa key &
-	    # we're set to ignore those
-	    if (!$lastkey)
-	    {
-		$name="<no valid address>" if (!$name);
-		&logit("ignoring uid $name, belongs to std key?")
-		    if ($debug);
-	    }
-	    else
-	    {
 		if ($name)
 		{
 		    # ignore expired, revoked and other bad keys
 		    if (defined $badcauses{$info[1]})
 		    {
 			&logit("ignoring ".($info[3]==1?"std":"ng")
-			       ." uid $name for 0x$lastkey, "
-			       ."reason: ".$badcauses{$info[1]});
+			       ." key 0x$info[4], reason: "
+			       .$badcauses{$info[1]});
 			next;
 		    }
-
-		    $keys{ng}->{$name}="0x$lastkey";
-		    &logit("got ".($info[3]==1?"std":"ng")
-			   ." key (uid) 0x$lastkey for $name")
+		    
+		    $keys{$lasttype}->{$name}="0x$lastkey";
+		    
+		    &logit("got $lasttype key 0x$lastkey for $name")
 			if ($debug);
 		}
 		else
 		{
-		    &logit("ignoring uid without valid address")
+		    &logit("saved $lasttype key 0x$lastkey, no address known yet")
 			if ($debug);
+		}
+		next;
+	    }
+	    else
+	    {
+		# uid: associate the current address with the key 
+		# given in the most recent public key line
+		# if no such key saved: the pub key was an rsa key &
+		# we're set to ignore those
+		if (!$lastkey)
+		{
+		    $name="<no valid address>" if (!$name);
+		    &logit("ignoring uid $name, belongs to std key?")
+			if ($debug);
+		}
+		else
+		{
+		    if ($name)
+		    {
+			# ignore expired, revoked and other bad keys
+			if (defined $badcauses{$info[1]})
+			{
+			    &logit("ignoring ".($info[3]==1?"std":"ng")
+				   ." uid $name for 0x$lastkey, "
+				   ."reason: ".$badcauses{$info[1]});
+			    next;
+			}
+			
+			$keys{$lasttype}->{$name}="0x$lastkey";
+			&logit("got $lasttype key (uid) 0x$lastkey for $name")
+			    if ($debug);
+		    }
+		    else
+		    {
+			&logit("ignoring uid without valid address")
+			    if ($debug);
+		    }
 		}
 	    }
 	}
+    }
+    else
+    {
+	logit("ignoring ng keyring, no key a/v.");
     }
 }
 
@@ -800,8 +839,12 @@ sub read_config
 	    }
 	    else
 	    {
-		logit("ignoring unknown config entry \"$_\"");
+		&bailout("bad config entry \"$_\"");
 	    }
+	}
+	else
+	{
+	    &bailout("bad config entry \"$_\"");
 	}
     }
     close F;
@@ -861,11 +904,11 @@ sub read_config
     # sanity checks: external executables
     &bailout("bad executable '$newconf{mta}' -- exiting")
 	if ($newconf{mta}=~/^(\S+)/ && ! -x $1);
-    (logit("bad agent-executable '$newconf{agent}', disabling agent support"),
-     $newconf{agentpath}=0) if ($newconf{agentpath} 
-				&& $newconf{agentpath}=~/^(\S+)/ && ! -x $1);
-    (logit("bad client-executable '$newconf{clientpath}', disabling agent support"),
-     $newconf{clientpath}=0) if ($newconf{clientpath} && $newconf{clientpath}=~/^(\S+)/ && ! -x $1);
+    &bailout("bad agent-executable '$newconf{agentpath}' -- exiting")
+ 	if ($newconf{agentpath} 
+ 	    && $newconf{agentpath}=~/^(\S+)/ && ! -x $1);
+    &bailout("bad client-executable '$newconf{clientpath}' -- exiting")
+	if ($newconf{clientpath} && $newconf{clientpath}=~/^(\S+)/ && ! -x $1);
     &bailout("bad executable '$newconf{pgppath}' -- exiting")
 	if ($newconf{usepgp} && $newconf{stdkey} ne "0" 
 	    && (!$newconf{pgppath} || $newconf{pgppath}=~/^(\S+)/ && ! -x $1));
@@ -885,16 +928,18 @@ sub read_config
     }
     elsif (!defined $newconf{ngkey})
     {
-	open(F,"$newconf{gpgpath} -q --batch --list-secret-keys --with-colons 2>$newconf{tempdir}/subproc |") || bailout("cant run $newconf{gpgpath} to list sec keys: $!","$newconf{tempdir}/subproc");
+	open(F,"$newconf{gpgpath} -q --batch --list-secret-keys --with-colons 2>$newconf{tempdir}/subproc |") || bailout("cant fork $newconf{gpgpath} to list sec keys: $!");
 	while (<F>)
 	{
 	    my @list=split(/:/);
-	    next if ($list[0] ne "sec" || $list[3] ne "1");
+	    next if ($list[0] ne "sec" || $list[3] ne "17");
+	    $list[4] =~ s/^.{8}//;	# truncate key-id
 	    $newconf{ngkey}="0x$list[4]";
 	    $debug && logit("set ngkey to $newconf{ngkey}");
 	    last;
 	}
 	close F;
+	bailout("error running $newconf{gpgpath}: $?","$newconf{tempdir}/subproc") if ($?);
 	bailout("could not find ngkey") if (!$newconf{ngkey});
     }
 
@@ -902,13 +947,12 @@ sub read_config
     {
 	if ($newconf{usepgp})
 	{
-	    my $res=0xffff & system("$newconf{pgppath} -kv $newconf{stdkey} $home/.pgp/secring.pgp 2>$newconf{tempdir}/subproc");
+	    my $res=0xffff & system("$newconf{pgppath} -kv $newconf{stdkey} $home/.pgp/secring.pgp >$newconf{tempdir}/subproc 2>&1");
 	bailout("bad stdkey spec \"$newconf{stdkey}\"","$newconf{tempdir}/subproc") if ($res);
 	}
 	else
 	{
 	    my $res=0xffff & system("$newconf{gpgpath} -q --batch --list-secret-keys --with-colons $newconf{stdkey} >$newconf{tempdir}/subproc 2>&1");
-	    # fixme: output gpg result
 	    bailout("bad stdkey spec \"$newconf{stdkey}\"","$newconf{tempdir}/subproc")
 		if ($res);
 	}
@@ -918,7 +962,7 @@ sub read_config
 	if ($newconf{usepgp})
 	{
 	    open(F,"$newconf{pgppath} -kv $home/.pgp/secring.pgp 2>$newconf{tempdir}/subproc |") 
-		|| bailout("cant run $newconf{pgppath} to list sec keys: $!","$newconf{tempdir}/subproc");
+		|| bailout("cant fork $newconf{pgppath} to list sec keys: $!");
 	    while (<F>)
 	    {
 		if (/^sec\s+\d+\/(\S+)\s+/)
@@ -929,6 +973,8 @@ sub read_config
 		}
 	    }
 	    close F;
+	    bailout("error running $newconf{pgppath}: $?","$newconf{tempdir}/subproc")
+		if ($?);
 	}
 	else
 	{
@@ -937,21 +983,27 @@ sub read_config
 	    while (<F>)
 	    {
 		my @list=split(/:/);
-		next if ($list[0] ne "sec" || $list[3] ne "17");
+		next if ($list[0] ne "sec" || $list[3] ne "1");
+		$list[4] =~ s/^.{8}//;	# truncate key-id
 		$newconf{stdkey}="0x$list[4]";
 		$debug && logit("set stdkey to $newconf{stdkey}");
 		last;
 	    }
 	    close F;
+	    bailout("error running $newconf{gpgpath}: $?","$newconf{tempdir}/subproc")
+		if ($?);
 	}
 	bailout("could not find stdkey") if (!$newconf{stdkey});
     } 
 
     # finally make sure that no action conflicts with the keys we may lack
+    bailout("no keys whatsoever a/v!") if (!$newconf{stdkey} && !$newconf{ngkey});
+
     bailout("config specifies ng but no ng key a/v")
 	if (!$newconf{ngkey} && grep($_->{action} =~ /^ng/, @over));
     bailout("config specifies std but no std key a/v")
 	if (!$newconf{stdkey} && grep($_->{action} =~ /^std/, @over));
+
 	
     # everything seems ok, overwrite global vars config and override 
     %config=%newconf;
@@ -1005,6 +1057,7 @@ sub send_bounce
 	."If you wish to retry again for all original recipients, just rename the file back to\n"
 	."$config{queuedir}/$file or otherwise remove the backup file.\n";
     close F;
+    bailout("error running $config{mta}: $?") if ($?);
 }
 
  
@@ -1025,7 +1078,7 @@ sub get_secret
 	    # cleanup possible previous blunder
 	    if ($res)
 	    {
-		$res=0xfff & system("$config{clientpath} delete $id >$config{tempdir}/subproc 2>&1");
+		$res=0xffff & system("$config{clientpath} delete $id >$config{tempdir}/subproc 2>&1");
 		bailout("error deleting $id from agent: $res/$!","$config{tempdir}/subproc")
 		    if ($res);
 	    }
@@ -1071,17 +1124,6 @@ sub sign_encrypt
 {
     my ($enc,$type,$infile,$outfile,@recips)=@_;
     my ($passphrase,$passphrase_cmd,$cmd);
-
-    if ($enc)
-    {
-	# some sanity checking
-	bailout("empty recipient list passed") if (!@recips);
-	foreach (@recips)
-	{
-	    bailout("oops. unknown encryption key $_")
-		if (!$keys{$type}->{$_});
-	}
-    }
         
     # passphrase issues
     if ($config{use_agent})
@@ -1129,7 +1171,7 @@ sub sign_encrypt
 	if ($type eq "std" && $config{usepgp})
 	{
 	    $cmd.="|PGPPASSFD=0 $config{pgppath} +batchmode "
-		."-u $config{stdkey} -seat -o $outfile $infile"
+		."-u $config{stdkey} -seat -o $outfile $infile "
 		.join(" ",@recips);
 	}
 	else
@@ -1162,7 +1204,7 @@ sub sign_encrypt
 
     $cmd.=" >$config{tempdir}/subproc 2>&1";
 
-    unlink($outfile) if ($outfile);
+    unlink($outfile) if (-e $outfile);
 
     open(F,$cmd) || bailout("cannot open pipe $cmd: $!");
     print F "$passphrase\n" if ($passphrase);
@@ -1188,9 +1230,8 @@ sub sign_encrypt
 	    open F,"$config{tempdir}/subproc";
 	    my @result=<F>;
 	    close F;
-	    
-	    return 1 
-		if (grep(/^\[GNUPG:\] BAD_PASSPHRASE/,@result));
+	
+	    return 1 if (grep(/^\[GNUPG:\] BAD_PASSPHRASE/,@result));
 	}
     
 	bailout("error running sign prog: $?","$config{tempdir}/subproc") if ($? == 0xff00);
@@ -1201,9 +1242,9 @@ sub sign_encrypt
     # ok, must be in compat mode...let's complete the nasty construction
     
     # next, convert the cleartext to the internal literal structure
-    unlink("$outfile.inter1");
+    unlink("$outfile.inter1") if (-e "$outfile.inter1");
     my $res=0xffff
-	    & system("$config{gpgpath} --batch -q --store -z 0 -o $outfile.inter1 "
+	    & system("$config{gpgpath} --batch -q --store --batch -z 0 -o $outfile.inter1 "
 		     ."$infile >$config{tempdir}/subproc 2>&1");
     bailout("error running gpg","$config{tempdir}/subproc") if ($res);
     
@@ -1211,8 +1252,8 @@ sub sign_encrypt
     open(F,"$outfile") || bailout("cant open $outfile: $!");
     open(G,"$outfile.inter1") || bailout("cant open $outfile.inter1: $!");
     
-    unlink("$outfile.inter2");
-    open(H,"|$config{gpgpath} --no-literal --store --compress-algo 1 "
+    unlink("$outfile.inter2") if (-e "$outfile.inter2");;
+    open(H,"|$config{gpgpath} --no-literal --store --batch  --compress-algo 1 "
 	 ."-o $outfile.inter2 >$config{tempdir}/subproc 2>&1")
 	|| bailout("cant open pipe to $config{gpgpath}: $!");
     print H <F>;
@@ -1220,17 +1261,18 @@ sub sign_encrypt
     close F;
     close G;
     close H;
-    bailout("error $? running gpg","$config{tempdir}/subproc") if ($?);
+    bailout("error running $config{gpgpath}: $?","$config{tempdir}/subproc") if ($?);
 	    
     # and finally encrypt all this for the wanted recipients.
-    $cmd="$config{gpgpath} --no-literal --encrypt --rfc1991 --cipher-algo idea "
+    unlink($outfile);
+    $cmd="$config{gpgpath} --no-literal --batch --encrypt --rfc1991 --cipher-algo idea "
 	.($config{alwaystrust}?"--always-trust ":"")
 	."--armor -o $outfile -r "
 	.join(" -r ",@recips)
 	." $outfile.inter2 >$config{tempdir}/subproc 2>&1";
 
     $res=0xffff & system($cmd);
-    bailout("error $res running gpg","$config{tempdir}/subproc") if ($res);
+    bailout("error running $config{gpgpath}: $res","$config{tempdir}/subproc") if ($res);
     return 0;
 }
 
@@ -1265,8 +1307,7 @@ sub findaction
 	    $actions{$addr}=$custom;
 	    next;
 	}
-	# apply default if necessary
-	$actions{$addr}=$config{"default"} if (! exists $actions{$addr});
+	&bailout("internal error, no action found for $addr") if (!exists $actions{$addr});
     }
 
     # no -force options for bcc
@@ -1369,12 +1410,9 @@ sub logit
 	push @lotsaoutput,"Details:";
 	if (open(DF,$detailfn))
 	{
-	   foreach (<DF>) 
-	   {
-	       push @lotsaoutput,$_;
-	   }
-	   close DF;
-       }
+	    push @lotsaoutput,<DF>;
+	    close DF;
+	}
     }
 
     if ($config{logfh})
