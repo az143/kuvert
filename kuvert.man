@@ -84,11 +84,19 @@ for details.
 .Pp
 Please note that 
 .Nm kuvert uses the 
-.Ql From:
-and
+.Ql To: ,
 .Ql Cc:
- headers to determine
-the recipients. Additionally, if there is a 
+and
+.Ql Bcc:
+headers to determine
+the recipients. 
+Recipients listed in a
+.Ql Bcc: 
+header are handled separately from all other recipients and do not affect
+the choice of actions for other recipients (ie. handling of 
+.Ar -force 
+options).
+Additionally, if there is a 
 .Ql Resend-To:
 header, 
 .Nm kuvert
@@ -332,10 +340,10 @@ for keys for everybody before deciding whether to encrypt or just sign.
 .Pp
 The special handling for 
 .Ql none
-oes break this paradigma a bit, but is
-necessary to make the 
+does break this paradigma a bit, but is
+necessary to make any
 .Ar -force
-a safe choice for your 
+option a safe choice for your 
 .Ql DEFAULT
 action: Otherwise 
 .Nm kuvert
@@ -371,7 +379,6 @@ RFC3156, RFC2015, RFC2440
 .Sh AUTHORS
 .An Alexander Zangerl <az@snafu.priv.at>
 .Sh BUGS
-The MTA to be used is set in the program itself.
 Currently 
 .Nm kuvert
 needs something sendmail-like in 
@@ -382,8 +389,5 @@ that understands
 .Fl oi
 and
 .Fl "oem".
-.Pp
-.Ql Bcc:
-is not interpreted by kuvert at the moment.
 .Pp
 Multiple -force actions won't work.
