@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.3 2003/01/15 22:57:54 az Exp az $
+#   $Id: kuvert,v 2.4 2003/01/21 12:27:01 az Exp az $
 #--
 
 use strict;
@@ -104,6 +104,7 @@ sub main
 	open(PIDF,">$pidf") || &bailout("cant open >$pidf: $!");
     }
     my $other=<PIDF>;
+    seek(PIDF,0,'SEEK_SET');
     logit("there seems to be another instance with PID $other") if ($other);
     &bailout("cant lock $pidf ($!), exiting.")
 	if (!flock(PIDF,LOCK_NB|LOCK_EX));
