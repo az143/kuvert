@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.20 2002/04/27 15:49:50 az Exp az $
+#   $Id: kuvert,v 1.21 2002/09/19 09:13:13 az Exp az $
 #--
 
 use strict;
@@ -96,7 +96,7 @@ my $conf_header="x-kuvert";
 my $PGP='/usr/bin/pgp';
 # gpg path
 my $GPG='/usr/bin/gpg';
-# cat
+# cat, needed if !use_pgp
 my $CAT="/bin/cat";
 # quintuple-client path
 my $client;
@@ -166,8 +166,8 @@ if ($options{"k"} || $options{"r"})
 
 if (! -r $config)
 {
-    logit("no configuration file, can't start");
-    die("no configuration file, can't start");
+    logit("no configuration file, can't start!");
+    die("no configuration file, can't start!\n");
     exit 1;
 }
 
@@ -881,6 +881,30 @@ sub handle_reload
     # consistency checks
     $use_agent=$client && $agent;
     $secret_on_demand=0 if (!$use_agent);
+
+    # sanity checks
+    if (! -x $GPG)
+    {
+	logit("bad ng executable '$GPG' -- exiting");
+	die "bad ng executable '$GPG' -- exiting\n";
+    }
+    if ($use_pgp && ! -x $PGP)
+    {
+	logit("bad std executable '$PGP' -- exiting");
+	die "bad std executable '$PGP' -- exiting\n";
+    }
+    
+    if ($use_agent)
+    {
+	foreach my $x ($client,$agent)
+	{
+	    if (! -x $x)
+	    {
+		logit("bad agent executable '$x' -- exiting");
+		die "bad agent executable '$x' -- exiting\n";
+	    }
+	}
+    }
 
     logit("reading std keyring.");
     %stdkeys=&std_listkeys;
