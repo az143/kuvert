@@ -4,7 +4,7 @@
 # does pgp/gpg signing/signing+encrypting transparently, based
 # on the content of your public keyring(s) and your preferences.
 #
-# copyright (c) 1999-2001 Alexander Zangerl <az@snafu.priv.at>
+# copyright (c) 1999-2003 Alexander Zangerl <az@snafu.priv.at>
 #
 #   This program is free software; you can redistribute it and/or modify
 #   it under the terms of the GNU General Public License as published by
@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.9 2003/02/21 11:41:06 az Exp az $
+#   $Id: kuvert,v 2.10 2003/02/22 04:57:58 az Exp az $
 #--
 
 use strict;
@@ -215,16 +215,17 @@ sub main
 
 	    #ok, open & locked, let's proceed
 	    logit("processing $file for $username");
+	    $barfmail=0; # avoid duplicate mails, we're eval()ing!
 	    eval { process_file(*FH,"$config{queuedir}/$file"); };
+	    $barfmail=1 if ($options{"b"});
 	    if ($@)
 	    {
-		chomp $@;
+		chomp(my $error=$@);
 		
 		rename("$config{queuedir}/$file","$config{queuedir}/.$file")
 		    || &bailout("cant rename $config{queuedir}/$file: $! -- exiting");
-		logit("problem \"$@\" while processing $file,"
-		      ." left as \".$file\".\n");
-		send_bounce($@,$file);
+		logit("failed to process $file, left as \".$file\".\n");
+		send_bounce($error,$file);
 	    }
 	    else
 	    {
@@ -1067,12 +1068,12 @@ sub send_bounce
     open(F,"|$config{mta} $username") || 
 	bailout("cant fork $config{mta}: $! -- exiting");
     print F "From: $username\nTo: $username\nSubject: $progname Mail Sending Failure\n\n"
-	."Your mail $config{queuedir}/$file could not be sent to some or all recipients.\n"
-	."The error message was:\n-----\n$res\n-----\n\n";
-    print F "Detailed error message:\n-----\n"
-	.join("",@detailederror)."\n-----\n\n" if (@detailederror);
-    print F "$progname has no reliable way of figuring out whether this failure was partial\n"
-	."or total, so please look into the log for further error indications.\n\n"
+	."Your mail $config{queuedir}/$file could not be sent to some or all recipients.\n\n"
+	."The error message was:\n\n$res\n\n\n";
+    print F "Detailed error message:\n\n"
+	.join("",@detailederror)."\n\n\n" if (@detailederror);
+    print F "$progname has no reliable way of figuring out whether this failure did affect\n"
+	."all recipients of your mail, so please look into the log for further error indications.\n\n"
 	."$progname has backed the failed mail up as $config{queuedir}/.$file;\n"
 	."If you wish to retry again for all original recipients, just rename the file back to\n"
 	."$config{queuedir}/$file or otherwise remove the backup file.\n";
@@ -1422,26 +1423,25 @@ sub bailout
 {
     my ($msg,$detailfn)=@_;
 
+    if ($detailfn && open(DF,$detailfn))
+    {
+	push @detailederror,<DF>;
+	close DF;
+    }
+
     if ($barfmail)
     {
 	# i'd like to call bailout without looping.
 	my $oldbarfmail=$barfmail;
 	$barfmail=0;	
-	my @detailederror=();
-	if (open(DF,$detailfn))
-	{
-	    push @detailederror,<DF>;
-	    close DF;
-	}
-	
 	my $mta=$config{mta}||"/usr/lib/sendmail"; # this could run before the config is read
 	open (F,"|$mta $username") || 
 	    bailout("cant fork $mta: $!");
 	print F "From: $username\nTo: $username\nSubject: $progname General Failure\n\n"
 	    ."$progname has encountered a serious/fatal failure.\n\n"
-	    ."The error message was:\n-----\n$msg\n-----\n\n";
-	print F "Detailed error message:\n-----\n"
-	    .join("",@detailederror)."\n-----\n\n" if (@detailederror);
+	    ."The error message was:\n\n$msg\n\n\n";
+	print F "Detailed error message:\n\n"
+	    .join("",@detailederror)."\n\n\n" if (@detailederror);
 	close F;
 	bailout("error running $mta: $?") if ($?);
 	$barfmail=$oldbarfmail;
