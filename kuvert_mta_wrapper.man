@@ -1,0 +1,60 @@
+.Dd October 25, 2001
+.Dt KUVERT_MTA_WRAPPER 1
+.Os Unix
+.Sh NAME
+kuvert-mta-wrapper \- wrapper around your MTA for mail submission to 
+.Xr kuvert 1
+.Sh SYNOPSIS
+.Nm kuvert-mta-wrapper
+.Op Fl options 
+.Op Ar args
+.Sh DESCRIPTION
+kuvert_mta_wrapper submits an email either directly to your MTA or
+enqueues it for 
+.Xr kuvert 1
+for further processing. kuvert_mta_wrapper should be called by your MUA
+instead of your usual MTA in order to enable kuvert to intercept and
+process the outgoing mails. Please see your MUA's documentation about
+how to override the MTA to be used.
+.Pp
+The decision whether queueing or calling the MTA directly is based on 
+the following factors:
+.Bl -enum
+.It 
+If there are options given other than 
+.Op Fl "bm",
+.Op Fl "f",
+.Op Fl "i",
+.Op Fl "t",
+.Op Fl "v",
+.Op Fl "oi",
+.Op Fl "d",
+.Op Fl "e",
+the standard MTA 
+.Pa /usr/lib/sendmail
+is executed with the options and arguments given. The result code in this case
+is the one the MTA returns.
+.It
+If there is a configuration file 
+.Pa ~/.kuvert
+(See 
+.Xr kuvert "1" for possible configuration directives) the mail is queued for 
+.Xr kuvert "1". The options and arguments are ignored.
+If there are problems, an error message is sent to syslog and -1 is returned.
+.El
+.Sh FILES
+.Bl -tag
+.It Pa ~/.kuvert
+configuration file for 
+.Xr kuvert "1" and
+.Xr kuvert_mta_wrapper "1".
+.It Pa ~/.kuvert_queue
+the default queue directory for 
+.Xr kuvert "1" if the configuration file does not specify an alternative.
+.El
+.Sh SEE ALSO
+.Xr kuvert 1
+.Sh AUTHORS
+.An Alexander Zangerl <az@snafu.priv.at>
+.Sh BUGS
+The list of allowed options and the MTA for fallback are set at compile time.
