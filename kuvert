@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.9 2002/01/02 06:42:48 az Exp az $
+#   $Id: kuvert,v 1.10 2002/01/02 06:59:22 az Exp az $
 #--
 
 use strict;
@@ -818,14 +818,14 @@ sub handle_reload
 	    chomp;
 	    next if (/^\#/ || /^\s*$/); # strip comments and empty lines
 	    # if the keyid given is 0, don't do ng pgp at all
-	    if (/^NGKEY\s+(\S.+)$/)
+	    if (/^NGKEY\s+(\S.*)$/)
 	    {
 		$ng_defkey=$1;
 		logit("set default ng key ng to $1") if ($options{"d"});
 		next;
 	    }
 	    # if the keyid given is 0, don't do std pgp at all
-	    if (/^STDKEY\s+(\S.+)$/)
+	    if (/^STDKEY\s+(\S.*)$/)
 	    {
 		$std_defkey=$1;
 		logit("set default std key to $1") if ($options{"d"});
