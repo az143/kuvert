@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.13 2002/01/30 14:23:21 az Exp az $
+#   $Id: kuvert,v 1.14 2002/02/05 23:44:47 az Exp az $
 #--
 
 use strict;
@@ -41,8 +41,8 @@ if (!getopts("dkrnv",\%options) || @ARGV)
     exit 1;
 }
 
-# manually updated...not perfect
-my $version="1.0.7";
+# the version number is inserted by make install
+my $version="INSERT_VERSION";
 
 if ($options{'v'})
 {
