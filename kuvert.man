@@ -312,5 +312,3 @@ and
 is not interpreted by kuvert at the moment.
 .Pp
 Multiple -force actions won't work.
-
-
