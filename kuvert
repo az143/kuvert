@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.4 2003/01/21 12:27:01 az Exp az $
+#   $Id: kuvert,v 2.5 2003/02/05 22:45:39 az Exp az $
 #--
 
 use strict;
@@ -50,7 +50,7 @@ my @detailederror=();
 sub main
 {
     my %options;
-    my $pidf="/tmp/kuvert.pid.$<";
+    my $pidf=($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp")."/kuvert.pid.$<";
 
     if (!getopts("dkrnv",\%options) || @ARGV)
     {
