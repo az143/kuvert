@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 1.27 2002/10/27 13:45:50 az Exp az $
+#   $Id: kuvert,v 2.0 2003/01/12 14:05:48 az Exp az $
 #--
 
 use strict;
@@ -148,8 +148,8 @@ sub main
 	    else
 	    {
 		# the child that should exec the quintuple-agent
-		exec "$config{agent}"
-		    || &bailout("cant exec $config{agent}: $!");
+		exec "$config{agentpath}"
+		    || &bailout("cant exec $config{agentpath}: $!");
 	    }
 	}
     }
@@ -227,9 +227,7 @@ sub main
 		    && &bailout("cant unlink $config{queuedir}/$file: $!");
 	    }
 	    # and clean up the cruft left behind, please!
-	    eval {cleanup("$config{tempdir}",0);};
-	    bailout("problem cleaning $config{tempdir}: $@")
-		if ($@);
+	    cleanup("$config{tempdir}",0);
 
 	    # unlock the file
 	    bailout("problem unlocking $config{queuedir}/$file: $!")
@@ -243,7 +241,7 @@ sub main
 }
 
 # processes a file in the queue, does not remove stuff from the tempdir or the queue
-# dies on errors
+# exception on errors
 sub process_file
 {
     my ($fh,$file)=@_;
@@ -398,7 +396,7 @@ sub process_file
 
 # sign an entity and send the resulting email to the listed recipients
 # args: entity, location of dump of entity, type, outermost headers, recipients
-# dies on errors
+# exception on errors
 sub sign_send
 {
     my ($ent,$dumpfile,$type,$header,@recips)=@_;
@@ -491,7 +489,7 @@ sub crypt_send
 
 # send entity to $mta, passing $args to $mta
 # ent is a MIME::Entity and args is either "-t" or a list of recipients
-# dies on errors
+# exception on errors
 sub send_entity
 {
     my ($ent,@args)=@_;
@@ -505,21 +503,21 @@ sub send_entity
 
 # remove temporary stuff left behind in directory $what
 # remove_what set: remove the dir, too.
-# dies on error, no retval
+# exception on error, no retval
 sub cleanup
 {
     my ($what,$remove_what)=@_;
     my ($name,$res);
 
-    opendir(F,$what) || die "cant opendir $what: $!\n";
+    opendir(F,$what) || bailout("cant opendir $what: $!");
     foreach $name (readdir(F))
     {
 	next if ($name =~ /^\.{1,2}$/o); 
-	(-d "$what/$name")?cleanup("$what/$name",1):
-	    (unlink("$what/$name") || die "cant unlink $what/$name: $!\n");
+	(-d "$what/$name")?&cleanup("$what/$name",1):
+	    (unlink("$what/$name") || bailout("cant unlink $what/$name: $!"));
     }
     closedir(F);
-    $remove_what && (rmdir("$what") || die "cant rmdir $what: $!\n");
+    $remove_what && (rmdir("$what") || bailout("cant rmdir $what: $!"));
     return 0;
 }
 
@@ -548,7 +546,7 @@ sub handle_term
 	    foreach ($config{ngkey},$config{stdkey})
 	    {
 		next if (!$_);
-		my $res=0xffff & system "$config{client} delete $_";
+		my $res=0xffff & system "$config{clientpath} delete $_";
 		&logit("problem deleting secret for $_: $res")
 		    if ($res);
 	    }
@@ -586,14 +584,16 @@ sub read_keyrings
 	#get the keys and dump the trailer and header lines
 	# this does not care if pgp is not existent...but then, we're not
 	# needing the pgp keyring
-	@tmp=`$config{pgp} -kv 2>$config{tempdir}/subproc`;
+	@tmp=`$config{pgppath} -kv 2>$config{tempdir}/subproc`;
+	bailout("failure reading keyring with $config{pgppath}: $?",
+		"$config{tempdir}/subproc") if ($?);
 	foreach (@tmp)
 	{
 	    if (/^pub\s+\d+\/(\S+)\s+(.+)$/)
 	    {
 		my ($key,$userspec)=($1,$2);
 		
-		if ($userspec =~ /<(.+)>/)
+		if ($userspec =~ /<?([^\s<]+\@[^\s>]+)>?/)
 		{
 		    $name=lc($1);
 		}
@@ -616,7 +616,7 @@ sub read_keyrings
 		}
 		next;
 	    }
-	    if (/^\s+.*<(\S+)>\s*$/)
+	    if (/^\s+.*<?([^\s<]+\@[^\s>]+)>?\s*$/)
 	    {
 		my $name=lc($1);
 		$keys{std}->{$name}="0x$lastkey";
@@ -631,7 +631,9 @@ sub read_keyrings
     
     # this does not care if gpg is not existent...but then, we're not
     # needing the gpg keyring
-    @tmp=`$config{gpg} -q --batch --list-keys --with-colons --no-expensive-trust-checks 2>$config{tempdir}/subproc`;
+    @tmp=`$config{gpgpath} -q --batch --list-keys --with-colons --no-expensive-trust-checks 2>$config{tempdir}/subproc`;
+    bailout("failure reading keyring with $config{gpgpath}: $?",
+	    "$config{tempdir}/subproc") if ($?);
     foreach (@tmp)
     {
 	@info=split(/:/);
@@ -655,7 +657,7 @@ sub read_keyrings
 	# if no address given: remember this key 
 	# but go on to the uid's to get an email address to
 	# work with
-	if ($info[9] =~ /<(.+)>/)
+	if ($info[9] =~ /<?([^\s<]+\@[^\s>]+)>?/)
 	{
 	    $name=lc($1);
 	}
@@ -737,7 +739,7 @@ sub read_keyrings
 }
 
 # reads the configuration file, sets config variables
-# dies on major problems
+# exception on major problems
 # no retval. changes %config and @overrides on success.
 sub read_config
 {
@@ -747,13 +749,13 @@ sub read_config
     my $defaction="none";
     my %newconf=(ngkey=>undef,
 	      stdkey=>undef,
-	      pgp=>"/usr/bin/pgp",
-	      gpg=>"/usr/bin/gpg",
+	      pgppath=>"/usr/bin/pgp",
+	      gpgpath=>"/usr/bin/gpg",
 	      usepgp=>0,
 	      use_agent=>0,
 	      private_agent=>0,
-	      client=>undef,
-	      agent=>undef,
+	      clientpath=>undef,
+	      agentpath=>undef,
 	      mta=>"/usr/lib/sendmail -om -oi -oem",
 	      secretondemand=>0,
 	      alwaystrust=>0,
@@ -860,29 +862,30 @@ sub read_config
     &bailout("bad executable '$newconf{mta}' -- exiting")
 	if ($newconf{mta}=~/^(\S+)/ && ! -x $1);
     (logit("bad agent-executable '$newconf{agent}', disabling agent support"),
-     $newconf{agent}=0) if ($newconf{agent} && $newconf{agent}=~/^(\S+)/ && ! -x $1);
-    (logit("bad client-executable '$newconf{client}', disabling agent support"),
-     $newconf{client}=0) if ($newconf{client} && $newconf{client}=~/^(\S+)/ && ! -x $1);
-    &bailout("bad executable '$newconf{pgp}' -- exiting")
+     $newconf{agentpath}=0) if ($newconf{agentpath} 
+				&& $newconf{agentpath}=~/^(\S+)/ && ! -x $1);
+    (logit("bad client-executable '$newconf{clientpath}', disabling agent support"),
+     $newconf{clientpath}=0) if ($newconf{clientpath} && $newconf{clientpath}=~/^(\S+)/ && ! -x $1);
+    &bailout("bad executable '$newconf{pgppath}' -- exiting")
 	if ($newconf{usepgp} && $newconf{stdkey} ne "0" 
-	    && (!$newconf{pgp} || $newconf{pgp}=~/^(\S+)/ && ! -x $1));
-    &bailout("bad executable '$newconf{gpg}' -- exiting")
+	    && (!$newconf{pgppath} || $newconf{pgppath}=~/^(\S+)/ && ! -x $1));
+    &bailout("bad executable '$newconf{gpgpath}' -- exiting")
 	if ($newconf{ngkey} ne "0" 
-	    && ( !$newconf{gpg} || $newconf{gpg}=~/^(\S+)/ && ! -x $1));
+	    && ( !$newconf{gpgpath} || $newconf{gpgpath}=~/^(\S+)/ && ! -x $1));
         
-    $newconf{use_agent}=$newconf{client} && $newconf{agent};
+    $newconf{use_agent}=$newconf{clientpath} && $newconf{agentpath};
     # secret on demand is only possible with agent *and* X11
     $newconf{secretondemand}=0 if (!$newconf{use_agent} || !$ENV{DISPLAY});
 
     # figure out the default keys if none were supplied, check them
     if ($newconf{ngkey})
     {
-	my $res=0xffff & system("$newconf{gpg} -q --batch --list-secret-keys --with-colons $newconf{ngkey} >$newconf{tempdir}/subproc 2>&1");
+	my $res=0xffff & system("$newconf{gpgpath} -q --batch --list-secret-keys --with-colons $newconf{ngkey} >$newconf{tempdir}/subproc 2>&1");
 	bailout("bad ngkey spec '$newconf{ngkey}'","$newconf{tempdir}/subproc") if ($res);
     }
     elsif (!defined $newconf{ngkey})
     {
-	open(F,"$newconf{gpg} -q --batch --list-secret-keys --with-colons 2>$newconf{tempdir}/subproc |") || bailout("cant run $newconf{gpg} to list sec keys: $!","$newconf{tempdir}/subproc");
+	open(F,"$newconf{gpgpath} -q --batch --list-secret-keys --with-colons 2>$newconf{tempdir}/subproc |") || bailout("cant run $newconf{gpgpath} to list sec keys: $!","$newconf{tempdir}/subproc");
 	while (<F>)
 	{
 	    my @list=split(/:/);
@@ -899,12 +902,12 @@ sub read_config
     {
 	if ($newconf{usepgp})
 	{
-	    my $res=0xffff & system("$newconf{pgp} -kv $newconf{stdkey} $home/.pgp/secring.pgp 2>$newconf{tempdir}/subproc");
+	    my $res=0xffff & system("$newconf{pgppath} -kv $newconf{stdkey} $home/.pgp/secring.pgp 2>$newconf{tempdir}/subproc");
 	bailout("bad stdkey spec \"$newconf{stdkey}\"","$newconf{tempdir}/subproc") if ($res);
 	}
 	else
 	{
-	    my $res=0xffff & system("$newconf{gpg} -q --batch --list-secret-keys --with-colons $newconf{stdkey} >$newconf{tempdir}/subproc 2>&1");
+	    my $res=0xffff & system("$newconf{gpgpath} -q --batch --list-secret-keys --with-colons $newconf{stdkey} >$newconf{tempdir}/subproc 2>&1");
 	    # fixme: output gpg result
 	    bailout("bad stdkey spec \"$newconf{stdkey}\"","$newconf{tempdir}/subproc")
 		if ($res);
@@ -914,8 +917,8 @@ sub read_config
     {
 	if ($newconf{usepgp})
 	{
-	    open(F,"$newconf{pgp} -kv $home/.pgp/secring.pgp 2>$newconf{tempdir}/subproc |") 
-		|| bailout("cant run $newconf{pgp} to list sec keys: $!","$newconf{tempdir}/subproc");
+	    open(F,"$newconf{pgppath} -kv $home/.pgp/secring.pgp 2>$newconf{tempdir}/subproc |") 
+		|| bailout("cant run $newconf{pgppath} to list sec keys: $!","$newconf{tempdir}/subproc");
 	    while (<F>)
 	    {
 		if (/^sec\s+\d+\/(\S+)\s+/)
@@ -929,8 +932,8 @@ sub read_config
 	}
 	else
 	{
-	    open(F,"$newconf{gpg} -q --batch --list-secret-keys --with-colons 2>$newconf{tempdir}/subproc|")
-		|| bailout("cant run $newconf{gpg} to list sec keys: $!\n","$newconf{tempdir}/subproc");
+	    open(F,"$newconf{gpgpath} -q --batch --list-secret-keys --with-colons 2>$newconf{tempdir}/subproc|")
+		|| bailout("cant run $newconf{gpgpath} to list sec keys: $!\n","$newconf{tempdir}/subproc");
 	    while (<F>)
 	    {
 		my @list=split(/:/);
@@ -986,7 +989,7 @@ sub qp_fix_parts
 }
 
 # notifies the sender of a problem, via email
-# no return value, dies on problems
+# no return value, exception on problems
 sub send_bounce
 {
     my ($res,$file)=@_;
@@ -1007,7 +1010,7 @@ sub send_bounce
  
 # get, verify and store a secret
 # input: what kind of secret
-# retval: none, changes %secrets, dies on major errors 
+# retval: none, changes %secrets, exception on major errors 
 # note: only used when secretondemand is unset.
 sub get_secret
 {
@@ -1022,7 +1025,7 @@ sub get_secret
 	    # cleanup possible previous blunder
 	    if ($res)
 	    {
-		$res=0xfff & system("$config{client} delete $id >$config{tempdir}/subproc 2>&1");
+		$res=0xfff & system("$config{clientpath} delete $id >$config{tempdir}/subproc 2>&1");
 		bailout("error deleting $id from agent: $res/$!","$config{tempdir}/subproc")
 		    if ($res);
 	    }
@@ -1032,7 +1035,7 @@ sub get_secret
 	    # the display-situation is covered by sign() itself.
 	    if (!$ENV{DISPLAY})
 	    {
-		$res = 0xffff & system("$config{client} put $id >$config{tempdir}/subproc 2>&1");
+		$res = 0xffff & system("$config{clientpath} put $id >$config{tempdir}/subproc 2>&1");
 		bailout("error running client storing $type passphrase: $res/$!",
 			"$config{tempdir}/subproc")
 		    if ($res);
@@ -1063,7 +1066,7 @@ sub get_secret
 
 # sign/encrypt a file, or test the passphrase if infile and outfile are undef.
 # input: encrypt, type std/ng, infile and outfile path, recipient keys if encrypt.
-# returns: 0 if ok, 1 if bad passphrase,  dies on other errors
+# returns: 0 if ok, 1 if bad passphrase,  exception on other errors
 sub sign_encrypt
 {
     my ($enc,$type,$infile,$outfile,@recips)=@_;
@@ -1083,7 +1086,7 @@ sub sign_encrypt
     # passphrase issues
     if ($config{use_agent})
     {
-	$cmd="|$config{client} get ".
+	$cmd="|$config{clientpath} get ".
 	    ($type eq "std"?$config{stdkey}:$config{ngkey});
     }
     else
@@ -1096,11 +1099,11 @@ sub sign_encrypt
     {
 	if ($type eq "std" && $config{usepgp})
 	{
-	    $cmd.="|PGPPASSFD=0 $config{pgp} +batchmode -u $config{stdkey} -sbat";
+	    $cmd.="|PGPPASSFD=0 $config{pgppath} +batchmode -u $config{stdkey} -sbat";
 	}
 	else
 	{
-	    $cmd.="|$config{gpg} -q -t --batch --armor --passphrase-fd 0 --status-fd 1 --default-key";
+	    $cmd.="|$config{gpgpath} -q -t --batch --armor --passphrase-fd 0 --status-fd 1 --default-key";
 	    if ($type eq "std")
 	    {
 		$cmd.=" $config{stdkey} --rfc1991 --cipher-algo idea --digest-algo md5 --compress-algo 1";
@@ -1125,7 +1128,7 @@ sub sign_encrypt
     {
 	if ($type eq "std" && $config{usepgp})
 	{
-	    $cmd.="|PGPPASSFD=0 $config{pgp} +batchmode "
+	    $cmd.="|PGPPASSFD=0 $config{pgppath} +batchmode "
 		."-u $config{stdkey} -seat -o $outfile $infile"
 		.join(" ",@recips);
 	}
@@ -1134,7 +1137,7 @@ sub sign_encrypt
 	    # gpg: normal mode...
 	    if ($type ne "std")
 	    {
-		$cmd.="|$config{gpg} -q -t --batch --armor --passphrase-fd 0 "
+		$cmd.="|$config{gpgpath} -q -t --batch --armor --passphrase-fd 0 "
 		    ."--status-fd 1 --default-key $config{ngkey} -r "
 		    .join(" -r ",@recips)
 		    .($config{alwaystrust}?" --always-trust":"")
@@ -1149,7 +1152,7 @@ sub sign_encrypt
 		# http://muppet.faveve.uni-stuttgart.de/~gero/gpg-2comp
 
 		# first, generate the signature and store it
-		$cmd.="|$config{gpg} --batch -q --detach-sign "
+		$cmd.="|$config{gpgpath} --batch -q --detach-sign "
 		    ."--default-key $config{stdkey} "
 		    ."--passphrase-fd 0 --status-fd 1 -o $outfile $infile";
 		# the rest is done later on
@@ -1200,7 +1203,7 @@ sub sign_encrypt
     # next, convert the cleartext to the internal literal structure
     unlink("$outfile.inter1");
     my $res=0xffff
-	    & system("$config{gpg} --batch -q --store -z 0 -o $outfile.inter1 "
+	    & system("$config{gpgpath} --batch -q --store -z 0 -o $outfile.inter1 "
 		     ."$infile >$config{tempdir}/subproc 2>&1");
     bailout("error running gpg","$config{tempdir}/subproc") if ($res);
     
@@ -1209,9 +1212,9 @@ sub sign_encrypt
     open(G,"$outfile.inter1") || bailout("cant open $outfile.inter1: $!");
     
     unlink("$outfile.inter2");
-    open(H,"|$config{gpg} --no-literal --store --compress-algo 1 "
+    open(H,"|$config{gpgpath} --no-literal --store --compress-algo 1 "
 	 ."-o $outfile.inter2 >$config{tempdir}/subproc 2>&1")
-	|| bailout("cant open pipe to $config{gpg}: $!");
+	|| bailout("cant open pipe to $config{gpgpath}: $!");
     print H <F>;
     print H <G>;
     close F;
@@ -1220,7 +1223,7 @@ sub sign_encrypt
     bailout("error $? running gpg","$config{tempdir}/subproc") if ($?);
 	    
     # and finally encrypt all this for the wanted recipients.
-    $cmd="$config{gpg} --no-literal --encrypt --rfc1991 --cipher-algo idea "
+    $cmd="$config{gpgpath} --no-literal --encrypt --rfc1991 --cipher-algo idea "
 	.($config{alwaystrust}?"--always-trust ":"")
 	."--armor -o $outfile -r "
 	.join(" -r ",@recips)
@@ -1350,7 +1353,7 @@ sub bailout
     my ($msg,$detailfn)=@_;
 
     logit($msg,$detailfn);
-    die($msg.'\n');
+    die($msg."\n");
 }
 
 # log the msg(s) to syslog or the logfile
