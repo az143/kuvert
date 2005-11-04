@@ -4,7 +4,7 @@
 # does pgp/gpg signing/signing+encrypting transparently, based
 # on the content of your public keyring(s) and your preferences.
 #
-# copyright (c) 1999-2003 Alexander Zangerl <az@snafu.priv.at>
+# copyright (c) 1999-2005 Alexander Zangerl <az@snafu.priv.at>
 #
 #   This program is free software; you can redistribute it and/or modify
 #   it under the terms of the GNU General Public License as published by
@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.13 2003/08/03 02:06:53 az Exp az $
+#   $Id: kuvert,v 2.14 2005/02/25 22:09:21 az Exp az $
 #--
 
 use strict;
@@ -31,6 +31,7 @@ use MIME::Parser;		# for parsing the mime-stream
 use Mail::Address;		# for parsing to and cc-headers
 use FileHandle;
 use Term::ReadKey;
+use Proc::PID::File;
 
 # some global stuff
 # the version number is inserted by make install
@@ -42,15 +43,17 @@ my($username,$home)=(getpwuid($<))[0,7];
 my $rcfile="$home/.kuvert";
 # configuration directives, keyring
 my (%config,@overrides,%keys);
-# the passphrases are stored here if agent is not a/v
+# the passphrases are stored here if passphrase store is not a/v
 my %secrets=();
 my ($debug,$barfmail);
 my @detailederror=();
 
+my $piddir=($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp");
+my $pidname="$progname.$<";
+
 sub main
 {
     my %options;
-    my $pidf=($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp")."/kuvert.pid.$<";
 
     if (!getopts("dkrnvb",\%options) || @ARGV)
     {
@@ -79,7 +82,7 @@ sub main
 	my $pid;
 	my $sig=($options{"r"}?'USR1':'TERM');
 
-	open(PIDF,"$pidf") || &bailout("cant open $pidf: $! -- exiting");
+	open(PIDF,"$piddir/$pidname.pid") || &bailout("cant open pidfile: $! -- exiting");
 	$pid=<PIDF>;
 	close(PIDF);
 	chomp $pid;
@@ -88,7 +91,6 @@ sub main
 	    if (!$pid);
 	&bailout("cant kill -$sig $pid: $! -- exiting")
 	    if (!kill $sig, $pid);
-	unlink $pidf if ($options{"k"});
 	exit 0;
     }
 
@@ -103,69 +105,13 @@ sub main
 	print STDERR "created blank configuration file $rcfile\n"
     }
 
-    # retain content of pidf, in case we cant lock it 
-    if (-f "$pidf")			
-    {
-	open(PIDF,"+<$pidf") || &bailout("cant open <+$pidf: $! -- exiting");
-    }
-    else
-    {
-	open(PIDF,">$pidf") || &bailout("cant open >$pidf: $! -- exiting");
-    }
-    my $other=<PIDF>;
-    chomp $other;
-    logit("there seems to be another instance with PID $other") if ($other);
-    &bailout("cant lock $pidf ($!) -- exiting.")
-	if (!flock(PIDF,LOCK_NB|LOCK_EX));
-    seek(PIDF,0,'SEEK_SET');
-
     logit("$progname version $version starting");
 
     # read the config, setup dirs, logging, defaultkeys etc.
     &read_config;
-    # make things clean and ready
-    cleanup($config{tempdir},0);
 
-    # get the passphrase(s) and setup secret-agent if wanted
-    # this has to be done before any fork, because the environment
-    # vars for secret-agent must be retained
-
-    # if use_agent is set, check if the agent is running and start one
-    # if needed.
-    if ($config{use_agent})
-    {
-	# not running? start a personal instance
-	# and remember its pid
-	if (!$ENV{"AGENT_SOCKET"})
-	{
-	    # start your own agent process
-	    # and remember its pid
-	    $config{private_agent}=open(SOCKETNAME,"-|");
-	    bailout("cant fork agent: $! -- exiting") 
-		if (!defined $config{private_agent});
-	    if ($config{private_agent})	# original process
-	    {
-		# get the socketname
-		my $res=<SOCKETNAME>;
-		# and set the correct env variable for client
-		$res=~/^AGENT_SOCKET=\'(.+)\';/;
-		$ENV{"AGENT_SOCKET"}=$1;
-		# do not close the pipe, because then the
-		# parent process tries to wait() on the child,
-		# which wont work here
-		$debug 
-		    && &logit("forked secret-agent pid $config{private_agent},"
-			      ."socket is $1");
-	    }
-	    else
-	    {
-		# the child that should exec the quintuple-agent
-		exec "$config{agentpath}"
-		    || &bailout("cant exec $config{agentpath}: $! -- exiting");
-	    }
-	}
-    }
-    
+    # get the passphrase(s) if no external passphrase store is used
+    # this has to be done before a fork...
     if (!$config{secretondemand})
     {
 	# get the passphrases and verify them
@@ -173,7 +119,6 @@ sub main
 	get_secret("std") if ($config{stdkey});
 	get_secret("ng") if ($config{ngkey});
     }
-
 
     if (!$debug && !$options{"n"})
     {
@@ -184,11 +129,13 @@ sub main
 	exit 0 if ($res);
     }
 
-    # the lockfile is ours, lets write the current pid
-    print PIDF "$$\n";
-    PIDF->flush;
-    truncate PIDF,tell(PIDF);	# and make sure there's nothing else in there...
-    # now read the keyrings
+    # check that we're the only instance running
+    bailout("$progname: some other instance is running!")
+	if (Proc::PID::File->running(dir=>$piddir,
+				     name=>$pidname));
+
+    # make things clean and ready. we're in sole command now.
+    cleanup($config{tempdir},0);
     &read_keyrings;
 
     # install the handler for conf reread
@@ -449,19 +396,19 @@ sub sign_send
     while (&sign_encrypt(0,$type,$dumpfile,$output,undef))
     {
 	# get rid of broken passphrase and lets try again
-	if ($config{use_agent})
+	if ($config{secretondemand})
 	{
 	    $debug && logit("bad passphrase, retry");
-	    my $res=0xffff & system("$config{clientpath} delete "
-				    .$config{$type."key"}." >$config{tempdir}/subproc 2>&1");
-	    bailout("error deleting broken passphrase from agent: $res",
+	    my $cmd=sprintf($config{delsecret},$config{$type."key"});
+	    my $res=0xffff & system("$cmd >$config{tempdir}/subproc 2>&1");
+	    bailout("error deleting broken passphrase from store: $res",
 		    "$config{tempdir}/subproc")
 		if ($res);		
 	}
 	else
 	{
 	    # bad passphrase but we're on our own -> cant recover
-	    bailout("bad passphrase, but no passphrase agent to query!");
+	    bailout("bad passphrase, but no passphrase store to query!");
 	}
     }
     # attach the signature
@@ -507,19 +454,19 @@ sub crypt_send
     while (&sign_encrypt(1,$type,$dumpfile,$output,@{$rec_keys}))
     {
 	# get rid of broken passphrase and lets try again
-	if ($config{use_agent})
+	if ($config{secretondemand})
 	{
 	    $debug && logit("bad passphrase, retry");
-	    my $res=0xffff & system("$config{clientpath} delete "
-				    .$config{$type."key"}." >$config{tempdir}/subproc 2>&1");
-	    bailout("error deleting broken passphrasee from agent: $res",
+	    my $cmd=sprintf($config{delsecret},$config{$type."key"});
+	    my $res=0xffff & system("$cmd >$config{tempdir}/subproc 2>&1");
+	    bailout("error deleting broken passphrase from store: $res",
 		    "$config{tempdir}/subproc")
 		if ($res);		
 	}
 	else
 	{
 	    # bad passphrase but we're on our own -> cant recover
-	    bailout("bad passphrase, but no passphrase agent to query!");
+	    bailout("bad passphrase, but no passphrase store to query!");
 	}
     }
     
@@ -587,25 +534,15 @@ sub handle_term
 	if ($res);
 
     # wipe keys
-    if ($config{use_agent})
+    if ($config{secretondemand})
     {
-	if ($config{private_agent})
+	foreach ($config{ngkey},$config{stdkey})
 	{
-	    # kill the private agent process
-	    $res = kill('TERM',$config{private_agent});
-	    &logit("problem killing $config{private_agent}: $!") if (!$res);
-	    wait;
-	}
-	else
-	{
-	    foreach ($config{ngkey},$config{stdkey})
-	    {
-		next if (!$_);
-		my $res=0xffff & system "$config{clientpath} delete $_";
-		&logit("problem deleting secret for $_: $res")
-		    if ($res);
-	    }
-	    
+	    next if (!$_);
+	    my $cmd=sprintf($config{delsecret},$_);
+	    my $res=0xffff & system $cmd;
+	    &logit("problem deleting secret for $_: $res")
+		if ($res);
 	}
     }
     close $config{logfh} if ($config{logfh});
@@ -825,10 +762,8 @@ sub read_config
 		 pgppath=>"/usr/bin/pgp",
 		 gpgpath=>"/usr/bin/gpg",
 		 usepgp=>0,
-		 use_agent=>0,
-		 private_agent=>0,
-		 clientpath=>undef,
-		 agentpath=>undef,
+		 getsecret=>undef,
+		 delsecret=>undef,
 		 mta=>"/usr/lib/sendmail -om -oi -oem",
 		 secretondemand=>0,
 		 alwaystrust=>0,
@@ -935,26 +870,28 @@ sub read_config
 	$newconf{logfh}->autoflush(1);
     }
 
+    # secret on demand is only possible with both a get and a del command
+    $newconf{secretondemand}=0 
+	if (!$newconf{getsecret} || !$newconf{delsecret});
 
     # sanity checks: external executables
     &bailout("bad executable '$newconf{mta}' -- exiting")
 	if ($newconf{mta}=~/^(\S+)/ && ! -x $1);
-    &bailout("bad agent-executable '$newconf{agentpath}' -- exiting")
- 	if ($newconf{agentpath} 
- 	    && $newconf{agentpath}=~/^(\S+)/ && ! -x $1);
-    &bailout("bad client-executable '$newconf{clientpath}' -- exiting")
-	if ($newconf{clientpath} && $newconf{clientpath}=~/^(\S+)/ && ! -x $1);
+    if ($newconf{secretondemand})
+    {
+	&bailout("bad executable '$newconf{getsecret}' -- exiting")
+	    if ($newconf{getsecret} 
+		&& $newconf{getsecret}=~/^(\S+)/ && ! -x $1);
+	&bailout("bad executable '$newconf{delsecret}' -- exiting")
+	    if ($newconf{delsecret} 
+		&& $newconf{delsecret}=~/^(\S+)/ && ! -x $1);
+    }
     &bailout("bad executable '$newconf{pgppath}' -- exiting")
 	if ($newconf{usepgp} && $newconf{stdkey} ne "0" 
 	    && (!$newconf{pgppath} || $newconf{pgppath}=~/^(\S+)/ && ! -x $1));
     &bailout("bad executable '$newconf{gpgpath}' -- exiting")
 	if ($newconf{ngkey} ne "0" 
 	    && ( !$newconf{gpgpath} || $newconf{gpgpath}=~/^(\S+)/ && ! -x $1));
-        
-    $newconf{use_agent}=$newconf{clientpath} && $newconf{agentpath};
-    # secret on demand is only possible with agent *and* X11
-    $newconf{secretondemand}=0 if (!$newconf{use_agent} || !$ENV{DISPLAY});
-
     # figure out the default keys if none were supplied, check them
     if ($newconf{ngkey})
     {
@@ -1111,45 +1048,21 @@ sub get_secret
    
     do 
     {
-	if ($config{use_agent})
-	{
-	    # cleanup possible previous blunder
-	    if ($res)
-	    {
-		$res=0xffff & system("$config{clientpath} delete $id >$config{tempdir}/subproc 2>&1");
-		bailout("error deleting $id from agent: $res/$!","$config{tempdir}/subproc")
-		    if ($res);
-	    }
-
-	    # if we have a display, we can use the demand-query option of
-	    # client get, otherwise we use client put.
-	    # the display-situation is covered by sign() itself.
-	    if (!$ENV{DISPLAY})
-	    {
-		$res = 0xffff & system("$config{clientpath} put $id >$config{tempdir}/subproc 2>&1");
-		bailout("error running client storing $type passphrase: $res/$!",
-			"$config{tempdir}/subproc")
-		    if ($res);
-	    }
-	}
-	else 
-	{
-	    # do-it-yourself
-	    
-	    # the previous attempt failed...
-	    print "wrong passphrase, try again.\n"
-		if ($res);
-	    
-	    print "enter secret for key $id:\n";
-	    ReadMode("noecho");
-	    chomp (my $phrase=<STDIN>);
-	    ReadMode("restore");
-	    bailout("error reading $type passphrase: $!")
-		if (!defined($phrase));
-	    print "\n";
-	    $secrets{$id}=$phrase;
-	    $phrase="x" x 64; 
-	}
+	# do-it-yourself
+	
+	# the previous attempt failed...
+	print "wrong passphrase, try again.\n"
+	    if ($res);
+	
+	print "enter secret for key $id:\n";
+	ReadMode("noecho");
+	chomp (my $phrase=<STDIN>);
+	ReadMode("restore");
+	bailout("error reading $type passphrase: $!")
+	    if (!defined($phrase));
+	print "\n";
+	$secrets{$id}=$phrase;
+	$phrase="x" x 64; 
 	$res=sign_encrypt(0,$type,undef,undef);
     }
     while ($res);
@@ -1164,10 +1077,10 @@ sub sign_encrypt
     my ($passphrase,$passphrase_cmd,$cmd);
         
     # passphrase issues
-    if ($config{use_agent})
+    if ($config{secretondemand})
     {
-	$cmd="|$config{clientpath} get ".
-	    ($type eq "std"?$config{stdkey}:$config{ngkey});
+	$cmd="|".sprintf($config{getsecret},
+			 ($type eq "std"?$config{stdkey}:$config{ngkey}));
     }
     else
     {
