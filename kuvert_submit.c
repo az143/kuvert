@@ -1,5 +1,5 @@
 /*
- * $Id: kuvert_mta_wrapper.c,v 1.6 2003/03/28 10:55:39 az Exp az $
+ * $Id: kuvert_mta_wrapper.c,v 1.7 2003/05/28 02:29:21 az Exp az $
  * 
  * this file is part of kuvert, a wrapper around your mta that
  * does pgp/gpg signing/signing+encrypting transparently, based
@@ -45,7 +45,7 @@ int main(int argc,char **argv)
    struct passwd *pwentry;
    /* fixme sizes */
    char filen[256],buffer[BUFLEN],dirn[256];
-   int res,c,fallback,spaceleft;
+   int res,c,fallback=0,spaceleft;
    char *p,*dirnp;
    FILE *out;
    FILE *cf;
