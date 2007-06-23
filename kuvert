@@ -20,7 +20,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.14 2005/02/25 22:09:21 az Exp az $
+#   $Id: kuvert,v 2.15 2005/11/04 06:21:20 az Exp az $
 #--
 
 use strict;
@@ -414,8 +414,9 @@ sub sign_send
     # attach the signature
     $newent->attach(Type => "application/pgp-signature",
 		    Path => "$output",
-		    Filename => undef,
+		    Filename => "signature.asc",
 		    Disposition => "inline",
+		    Description=> "Digital Signature",
 		    Encoding => "7bit");
     # and send the resulting thing, not cleaning up
     &send_entity($newent,@recips);
