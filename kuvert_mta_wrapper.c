@@ -1,5 +1,5 @@
 /*
- * $Id: kuvert_mta_wrapper.c,v 1.7 2003/05/28 02:29:21 az Exp az $
+ * $Id: kuvert_mta_wrapper.c,v 1.8 2007/06/23 03:14:46 az Exp az $
  * 
  * this file is part of kuvert, a wrapper around your mta that
  * does pgp/gpg signing/signing+encrypting transparently, based
@@ -32,6 +32,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <syslog.h>
+#include <stdlib.h>
 
 #define CONFFILE "/.kuvert"
 #define DEFAULT_QUEUEDIR "/.kuvert_queue"
