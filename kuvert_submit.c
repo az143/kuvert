@@ -1,11 +1,11 @@
 /*
- * $Id: kuvert_mta_wrapper.c,v 1.8 2007/06/23 03:14:46 az Exp az $
+ * $Id: kuvert_submit.c,v 1.9 2007/08/12 03:18:39 az Exp $
  * 
  * this file is part of kuvert, a wrapper around your mta that
  * does pgp/gpg signing/signing+encrypting transparently, based
  * on the content of your public keyring(s) and your preferences.
  *
- * copyright (c) 1999-2003 Alexander Zangerl <az+kuvert@snafu.priv.at>
+ * copyright (c) 1999-2008 Alexander Zangerl <az+kuvert@snafu.priv.at>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -37,7 +37,7 @@
 #define CONFFILE "/.kuvert"
 #define DEFAULT_QUEUEDIR "/.kuvert_queue"
 #define BUFLEN 65536
-#define FALLBACKMTA "/usr/lib/sendmail"
+#define FALLBACKMTA "/usr/sbin/sendmail"
 
 #define BAILOUT(a,...) {fprintf(stderr,"%s: ",argv[0]); fprintf(stderr, a "\n",##__VA_ARGS__);syslog(LOG_ERR,a,##__VA_ARGS__); exit(1);}
 
@@ -46,123 +46,72 @@ int main(int argc,char **argv)
    struct passwd *pwentry;
    /* fixme sizes */
    char filen[256],buffer[BUFLEN],dirn[256];
-   int res,c,fallback=0,spaceleft;
+   int res,c,spaceleft;
    char *p,*dirnp;
    FILE *out;
    FILE *cf;
    struct stat statbuf;
+   int direct=1,norecips=0;
 
    /* determine whether to queue stuff or to call sendmail
-      directly: if there is a proper config file of kuvert in $HOME,
-      and if the flags/args given are "consistent" with a call
-      to sendmail for mail submission, do queue stuff;
-      otherwise exec sendmail. */
-
+      directly: if there is no proper config file for kuvert in $HOME
+      go direct, otherwise we enqueue.  */
    openlog(argv[0],LOG_NDELAY|LOG_PID,LOG_MAIL);
-   
-   /* scan the arguments for options:
-      we understand about: no options, non-option-args, --,
-      -bm, -f, -i, -t, -v, -m, -oi, -d*, -e*. everything else means some special
-      instruction to sendmail, so we exec sendmail. */
 
-   /* no getopt error messages, please! */
-   opterr=0;
-
-   while ((c=getopt(argc,argv,"f:itvb:mo:"))!=-1 && !fallback)
-   {
-      switch (c)
-      {
-	 case 'v':
-	 case 'f':
-	 case 'i':
-	 case 't':
-	 case 'm':			/* deprecated option 'metoo',
-					   but nmh uses this... */
-	    break;			/* these options are ok and supported */
-	 case 'b':
-	    /* just -bm is ok, other -b* are bad */
-	    if (!optarg || *optarg != 'm') 
-	    {
-	       fallback=1;
-	       syslog(LOG_INFO,"option '-%c%s' mandates fallback",
-		      c,optarg ? optarg : "");
-	    }
-	    break;
-	 case 'o':
-	    /* -oi, -oe*, -od* are ok */
-	    if (!optarg || (*optarg != 'i' && *optarg != 'e' 
-			    && *optarg != 'd'))
-	    {
-	       fallback=1;
-	       syslog(LOG_INFO,"option '-%c%s' mandates fallback",
-		      c,optarg ? optarg : "");
-	    }
-	    break;
-	 default:
-	    /* well, there's an option we do not know, lets bail out */
-	    fallback=1;
-	    syslog(LOG_INFO,"option '-%c' mandates fallback",
-		   c=='?'?optopt:c);
-	    break;
-      }
-   }
-   if (!fallback)
-   {
-      /* options seem ok, look for config file in $HOME */
-      pwentry=getpwuid(getuid());
-      if (!pwentry)
-	 BAILOUT("getpwuid failed: %s",strerror(errno));
+   /* look for config file in $HOME */
+   pwentry=getpwuid(getuid());
+   if (!pwentry)
+      BAILOUT("getpwuid failed: %s",strerror(errno));
     
-      /* open and scan the conffile for an queue-file definition 
-	 if there is no conffile, kuvert wont work ever  */
-      if (snprintf(filen,sizeof(filen),"%s%s",pwentry->pw_dir,CONFFILE)==-1)
-	 BAILOUT("overlong filename, suspicious",NULL);
-      if (!(cf=fopen(filen,"r")))	
+   /* open and scan the conffile for an queue-file definition 
+      if there is no conffile, kuvert wont work ever  */
+   if (snprintf(filen,sizeof(filen),"%s%s",pwentry->pw_dir,CONFFILE)==-1)
+      BAILOUT("overlong filename, suspicious",NULL);
+   if (!(cf=fopen(filen,"r")))	
+   {
+      /* no config file -> exec sendmail */
+      syslog(LOG_INFO,"user has no "CONFFILE" config file, running sendmail");
+   }
+   else
+   {
+      direct=0;
+      /* scan the lines for ^QUEUEDIR\s+ */
+      dirnp=NULL;
+      while(!feof(cf))
       {
-	 /* no config file -> exec sendmail */
-	 syslog(LOG_INFO,"user has no .kuvert config file, fallback");
-	 fallback=1;
-      }
-      else
-      {
-	 /* scan the lines for ^QUEUEDIR\s+ */
-	 dirnp=NULL;
-	 while(!feof(cf))
-	 {
-	    p=fgets(buffer,sizeof(buffer)-1,cf);
-	    /* empty file? ok, we'll ignore it */
-	    if (!p)
-	       break;
+	 p=fgets(buffer,sizeof(buffer)-1,cf);
+	 /* empty file? ok, we'll ignore it */
+	 if (!p)
+	    break;
 	
-	    if (!strncmp(buffer,"QUEUEDIR",sizeof("QUEUEDIR")-1))
+	 if (!strncasecmp(buffer,"QUEUEDIR",sizeof("QUEUEDIR")-1))
+	 {
+	    p=buffer+sizeof("QUEUEDIR")-1;
+	    for(;*p && isspace(*p);++p)
+	       ;
+	    if (*p)
 	    {
-	       p=buffer+sizeof("QUEUEDIR")-1;
-	       for(;*p && isspace(*p);++p)
+	       dirnp=p;
+	       /* strip the newline from the string */
+	       for(;*p && *p != '\n';++p)
 		  ;
-	       if (*p)
-	       {
-		  dirnp=p;
-		  /* strip the newline from the string */
-		  for(;*p && *p != '\n';++p)
-		     ;
-		  if (*p == '\n')
-		     *p=0;
-		  /* strip eventual trailing whitespace */
-		  for(--p;p>dirnp && isspace(*p);--p)
-		     *p=0;
-	       }
-	       /* empty dir? ignore it */
-	       if (strlen(dirnp)<2)
-		  dirnp=NULL;
-	       break;
+	       if (*p == '\n')
+		  *p=0;
+	       /* strip eventual trailing whitespace */
+	       for(--p;p>dirnp && isspace(*p);--p)
+		  *p=0;
 	    }
+	    /* empty dir? ignore it */
+	    if (strlen(dirnp)<2)
+	       dirnp=NULL;
+	    break;
 	 }
-	 fclose(cf);
       }
+      fclose(cf);
    }
 
-   /* fallback to sendmail requested? */
-   if (fallback)
+   /* direct to sendmail requested? */
+   if (direct)
    {
       /* mangle argv[0], so that it gets recognizeable by sendmail */
       argv[0]=FALLBACKMTA;
@@ -180,10 +129,10 @@ int main(int argc,char **argv)
 	 --spaceleft && c<argc-1 && strcat(buffer," ");
       }
     
-      syslog(LOG_INFO,"will exec MTA as '%s'",buffer);
+      syslog(LOG_INFO,"executing MTA '%s' directly",buffer);
       execv(FALLBACKMTA,argv);
       /* must not reach here */
-      BAILOUT("execv FALLBACKMTA failed: %s",strerror(errno));
+      BAILOUT("execv "FALLBACKMTA" failed: %s",strerror(errno));
    }
 
    /* otherwise queue the stuff for kuvert,
@@ -221,7 +170,7 @@ int main(int argc,char **argv)
       BAILOUT("%s does not have mode 0700 - refusing to run",dirnp);
    }
    umask(066);			/* absolutely no access for group/others... */
-    
+   
    /* dir does exist now */
    snprintf(filen,sizeof(filen),"%s/%d",dirnp,getpid());
   
@@ -235,7 +184,37 @@ int main(int argc,char **argv)
       BAILOUT("flock failed: %s\n",strerror(errno));
    }
 
-   /* and put the data there */
+   /* scan the arguments for the LSB-mandated options:
+      we ignore any options but -f, -t.
+   /* no getopt error messages, please! */
+   opterr=0;
+   while ((c=getopt(argc,argv,"f:t"))!=-1)
+   {
+      if (c=='?')
+	 continue;		/* we simply ignore uninteresting options */
+      else if (c=='f')
+      {
+	 /* pass the intended envelope sender */
+	 fprintf(out,"X-Kuvert-From: %s\n",optarg);
+      }
+      else if (c=='t')
+      {
+	 /* no recipients given, so we don't need to pass any recips */
+	 norecips=1;
+      }
+   }
+
+   if (!norecips && optind<argc)
+   {
+      fprintf(out,"X-Kuvert-To: ");
+      for(c=optind;c<argc;++c)
+      {
+	 fprintf(out,"%s%s",argv[c],(c<argc-1?", ":"\n"));
+      }
+   }
+   fflush(out);
+
+   /* now finally put the data in the queuefile */
    do 
    {
       res=fread(buffer,1,BUFLEN,stdin);
