@@ -1,0 +1,86 @@
+=pod
+
+=head1 NAME
+
+kuvert_submit - wrapper around your MTA for mail submission to kuvert(1)
+
+=head1 SYNOPSIS 
+
+kuvert_submit [sendmail-options] [recipients...]
+
+=head1 DESCRIPTION
+
+Kuvert_submit submits an email either directly to L<sendmail(8)> or
+enqueues it for L<kuvert(1)> for further processing.  kuvert_submit
+should be called by your MUA instead of your usual MTA to enable
+kuvert to intercept and process the outgoing mails. Please see your MUA's
+documentation about how to override the MTA to be used.
+
+Kuvert_submit transparently invokes C</usr/sbin/sendmail> directly
+if it cannot find a ~/.kuvert configuration file. Otherwise, it enqueues 
+the email in the queue directory specified in the configuration file. 
+If that fails or if the configuration file is invalid, kuvert_submit prints an 
+error message to STDERR and terminates with exit code 1. 
+On successful submission, kuvert_submit terminates with exit code 0.
+
+Kuvert_submit also logs messages to syslog with the facility "mail".
+
+=head1 OPTIONS
+
+If it runs the MTA directly then kuvert_submit passes all options through 
+to /usr/sbin/sendmail. Otherwise, it ignores all options except 
+-f and -t.
+
+=over
+
+=item -f <emailaddress>
+
+Sets the envelope sender. Kuvert_submit passes this on to kuvert.
+
+=item -t
+
+Tells an MTA to use the recipients in the mail instead of any commandline
+arguments. If -t is not given then kuvert_submit passes the recipients 
+from the commandline on to kuvert.
+
+=back
+
+=head1 FILES
+
+=over
+
+=item ~/.kuvert 
+
+The configuration file read by kuvert and kuvert_submit. If not present,
+kuvert_submit calls /usr/sbin/sendmail directly.
+
+=item ~/.kuvert_queue
+
+The default queue directory.
+
+=back
+
+=head1 SEE ALSO
+
+L<kuvert(1)>
+
+=head1 AUTHOR
+
+Alexander Zangerl <az@snafu.priv.at>
+
+=head1 COPYRIGHT AND LICENCE
+
+copyright 1999-2008 Alexander Zangerl <az@snafu.priv.at>
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License version 2
+as published by the Free Software Foundation.
+
+
+
+
+
+
+
+=cut
+
