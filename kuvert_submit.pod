@@ -3,7 +3,7 @@
 
 =head1 NAME
 
-kuvert_submit - wrapper around your MTA for mail submission to kuvert(1)
+kuvert_submit - MTA wrapper for mail submission to kuvert(1)
 
 =head1 SYNOPSIS 
 
