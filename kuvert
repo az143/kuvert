@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.17 2008/06/29 07:24:53 az Exp az $
+#   $Id: kuvert,v 2.18 2008/06/29 10:26:41 az Exp az $
 #--
 
 use strict;
@@ -166,9 +166,9 @@ if (!$options{o} && $config{"can-detach"})
     {
 	exit 0;			# parent is done
     }
-    print PIDF "$$\n";
-    close PIDF;			# clears the lock
 }
+print PIDF "$$\n";
+close PIDF;			# clears the lock
 
 # make things clean and ready. we're in sole command now.
 cleanup($config{tempdir},0);
@@ -786,10 +786,24 @@ sub read_config
     &bailout("cant open $rcfile: $!")
 	if (!open (F,$rcfile));
     logit("reading config file");
-    while (<F>)
+    my @stuff=<F>;
+    close F;
+    for (@stuff)
     {
 	chomp;
 	next if (/^\s*\#/ || /^\s*$/); # strip comments and empty lines
+
+	# trigger on old config-file style
+	if (/^([[:upper:]]+)\s+(\S.*)\s*$/)
+	{
+	    my $nf=rewrite_conf(@stuff);
+	    die("Can't work with old config, terminating!
+$progname has found an old config file and attempted a ROUGH auto-conversion.
+
+The result has been left in $nf and likely needs to be adjusted 
+for ${progname}'s new features. Please do so and restart $progname 
+with the new config file in place.\n");
+	}
 
 	if (/^\s+(\S+)\s+(fallback(-all)?(,(0x)?[a-fA-F0-9]+)?|signonly|none)\s*(\#.*)?$/)
 	{
@@ -912,6 +926,50 @@ sub read_config
     close F;
     $options{overrides}=\@over;
     return %options;
+}
+
+sub rewrite_conf
+{
+    my @old=@_;
+    
+    my ($fh,$fn)=mkstemp(($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp")."/config.XXXX");
+    my %xlat=qw(NGKEY defaultkey 
+		GETSECRET query-secret
+		DELSECRET flush-secret
+		MTA msp
+		ALWAYSTRUST alwaystrust
+		INTERVAL interval
+		TEMPDIR tempdir
+		QUEUEDIR queuedir
+		LOGFILE logfile
+		IDENTIFY identify);
+	      
+    for (@old)
+    {
+	chomp;
+	next if (/^\#/ || /^\s*$/); # strip comments and empty lines
+	
+	if (/^(\S+)\s+((none|std(sign)?|ng(sign)?|fallback)(-force)?)\s*$/)
+	{
+	    my ($k,$v)=($1,$2);
+	    $v=~s/(std|ng)sign/signonly/;
+	    $v=~s/(std|ng)/fallback/;
+	    $v=~s/fallback-force/fallback-all/;
+	    
+	    print $fh ($k eq "DEFAULT"?"defaultaction":" $k")." $v\n\n";
+	}
+	elsif (/^([[:upper:]]+)\s+(\S.*)\s*$/)
+	{
+	    my ($k,$v)=($1,$2);
+	    if ($xlat{$k})
+	    {
+		$k=$xlat{$k};
+		print $fh "$k $v\n\n";
+	    }
+	}
+    }
+    close $fh;
+    return $fn;
 }
 
 # read keyring 
@@ -1701,7 +1759,7 @@ in the config file is significant: the search terminates on first match.
 =head2 Options 
 
 Options are given one per line, and option lines must start with 
-the option name followed by some whitespace.
+the option name followed by some whitespace. All options are case-sensitive.
 Depending on the option content, some or all of the remainder of 
 the option line will be assigned as option value. Inline comments are 
 not supported.
