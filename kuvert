@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.19 2008/06/29 11:01:55 az Exp az $
+#   $Id: kuvert,v 2.20 2008/06/29 11:39:34 az Exp az $
 #--
 
 use strict;
@@ -767,7 +767,7 @@ sub read_config
 	 msport=>587,
 	 msp=>"/usr/sbin/sendmail -om -oi -oem",
 	 "use-agent"=>undef,
-	 syslog=>"mail",
+	 syslog=>undef,
 	 logfile=>undef,
 	 queuedir=>"$home/.kuvert_queue",
 	 tempdir=>($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp")."/kuvert.$username.$$",
@@ -1782,7 +1782,7 @@ sanity-checks options at startup.
 =item syslog <syslog facility or blank>
 
 Whether kuvert should use syslog for logging, and if so, what facility to
-use. Default: mail. This is independent of the logfile option below.
+use. Default: nothing. This is independent of the logfile option below.
 
 =item logfile <path or blank>
 
