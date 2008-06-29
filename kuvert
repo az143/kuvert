@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.18 2008/06/29 10:26:41 az Exp az $
+#   $Id: kuvert,v 2.19 2008/06/29 11:01:55 az Exp az $
 #--
 
 use strict;
@@ -987,6 +987,7 @@ sub read_keyring
     my @tmp=`gpg -q --batch --list-keys --with-colons --no-expensive-trust-checks 2>$tf`;
     bailout("keyring reading failed: $?",(-r $tf && readfile($tf))) 
 	if ($?);
+    logit("finished reading keyring");
     
     my ($lastkey,$lasttype);
     foreach (@tmp)
