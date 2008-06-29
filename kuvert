@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.20 2008/06/29 11:39:34 az Exp az $
+#   $Id: kuvert,v 2.21 2008/06/29 11:57:31 az Exp az $
 #--
 
 use strict;
@@ -1722,7 +1722,7 @@ comma-separated entry like this:
  Some Name "action=fallback,key=0x12345" <user@some.host>
 
 The signing key can be overridden in a similar fashion: if the From
-address contains a ((key=B<keyid>)) stanza, kuvert will use this key for
+address contains a "key=B<keyid>" stanza, kuvert will use this key for
 signing this single email.
 
 =head1 CONFIGURATION
