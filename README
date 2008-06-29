@@ -1,79 +1,78 @@
 this is kuvert, a wrapper around sendmail or other MTAs that
-does pgp/gpg signing/signing+encrypting transparently, based
+does gpg signing/signing+encrypting transparently, based
 on the content of your public keyring(s) and your preferences.
 
 how it works:
 -------------
 
-you have to get your MUA to use kuvert_mta_wrapper instead of executing
-/usr/lib/sendmail (or similar). kuvert_mta_wrapper will spool the mail
-in kuvert's queue, iff there is a suitable configuration file and the 
-parameters passed to kuvert_mta_wrapper are consistent with sending mail
-via sendmail.
+you need to configure your MUA to submit mails to kuvert instead of 
+directly. you configure kuvert either to present an SMTP server to
+your MUA, or you make your MUA to use kuvert_submit instead of executing
+/usr/sbin/sendmail. kuvert_submit will spool the mail
+in kuvert's queue iff there is a suitable configuration file.
 
 kuvert is the tool that takes care of mangling the email. it reads the 
 queue periodically and handles emails in the queue: signing or encrypting
-the mail, then handing it over to /usr/lib/sendmail for transport.
+the mail, then handing it over to /usr/lib/sendmail or an external SMTP 
+server for transport.
 
 (why a queue? because i thought it might be useful to make sure that none of
 your emails leaves your system without kuvert handing it. you might be 
 very paranoid, and kill kuvert whenever you leave your box (and remove
 the keyrings as well).)
 
-how to use kuvert in a nutshell: 
---------------------------------
-
-you'll need a MTA which provides /usr/lib/sendmail with "common" options
-(see the manpage for which are necessary). also you'll need a MUA which
-can be instructed not to run /usr/lib/sendmail.
-
-in a pinch you could rename /usr/lib/sendmail to something else, and install
-kuvert_mta_wrapper as /usr/lib/sendmail. if you choose so, make double sure 
-that your ~/.kuvert lists the name of the real sendmail binary as MTA.
-
 installation:
 -------------
 
-on debian systems you may install just the kuvert package.
+on debian systems you simply install the kuvert package, construct
+a suitable .kuvert configuration file and off you go. 
+an example config file is provided 
+at /usr/share/doc/kuvert/examples/dot-kuvert.
 
 on other systems you need to do the following:
 
-you need perl perl 5.004+, MIME-tools-4.124.tar.gz or later,
-MIME-Base64-2.11.tar.gz or later, and MailTools-1.13.tar.gz or later
-from your nearest CPAN archive and install them. get gpg and/or pgp2.x.
-optional: get robert bihlmeyer's quintuple-agent, compile and install it.
+you need perl perl 5.004+, gpg and a raft of perl modules:
+MIME::Parser, Mail::Address, Net::SMTP, Sys::Hostname, Net::Server::Mail,
+IO::Socket::INET, Filehandle, File::Slurp, File::Temp, Fcntl and Time::HiRes.
+some of those are part of a standard perl intall, others you'll have to
+get from your nearest CPAN archive and install.
+optional: get robert bihlmeyer's quintuple-agent, the linux-kernel keyutils 
+package, the gpg-agent or some other passphrase cache of your choice.
 
 run make, make install DESTDIR=/ as root
--> kuvert, kuvert_mta_wrapper and the two manpages will be installed
-in /usr/bin and /usr/share/man/man1.
+-> kuvert, kuvert_submit, the manpages and one helper module 
+will be installed in /usr/bin, /usr/share/man/man1 and 
+/usr/share/perl5/Net/Server/Mail/ESMTP/, respectively.
 
 configuration:
 --------------
 
-read the manpages for kuvert(1) and kuvert_mta_wrapper(1), 
-instruct your MUA to use kuvert_mta_wrapper, make the config file
-~/.kuvert.
+read the manpages for kuvert(1) and kuvert_submit(1) and 
+consult the example config file "dot-kuvert". you will need
+to create your own config file as ~/.kuvert. sorry, no autoconfig here:
+this step is too crucial for a mere robot to perform. 
 
-finally start kuvert and inject a testmail, look at the logs to check
+then start kuvert and inject a testmail, look at the logs to check
 if everything works correctly.
 
 (historical note: kuvert came into existence in 1996 as pgpmail and
 was used only privately until 99, when it was extended and renamed
 to guard. some of my friends started using this software, and in 
 2001 it was finally re-christened kuvert, extended even further
-and debianized.)
+and debianized. in 2008 it received a major overhaul to also provide 
+inbound smtp as submission mechanism, outbound smtp transport and better
+controllability via email addresses. until 2008 kuvert supported pgp2.x.)
 
 please report bugs to me, Alexander Zangerl, <az@snafu.priv.at>.
 
 The original source can always be found at:
 	http://www.snafu.priv.at/kuvert/
 
-Copyright (C) 1999-2002  Alexander Zangerl
+Copyright (C) 1999-2008 Alexander Zangerl
 
   This program is free software; you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation; either version 2 of the License, or
-  (at your option) any later version.
+  it under the terms of the GNU General Public License version 2
+  as published by the Free Software Foundation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
