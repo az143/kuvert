@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.16 2007/06/23 02:37:57 az Exp az $
+#   $Id: kuvert,v 2.17 2008/06/29 07:24:53 az Exp az $
 #--
 
 use strict;
@@ -72,7 +72,6 @@ my $pidname="$progname.$<";
 
 # kill a already running process
 # TERM for kill or HUP for rereading
-# fixme: pidstuff for the smtp daemon
 my $pidf="$piddir/$pidname.pid";
 if ($options{"k"} || $options{"r"})
 {
@@ -92,13 +91,16 @@ if ($options{"k"} || $options{"r"})
 	my $fn="/proc/$p/cmdline";
 	if (-r $fn && (my $n=read_file($fn))=~/^$progname/)
 	{
-	    die "can't send signal to process $p: $!\n"
-		if (!kill(($n=~/^$listenername/?$ssig:$sig),$p));
+	    my $s=($n=~/^$listenername/?$ssig:$sig);
+	    dlogit("sending sig $s to $p");
+	    logit("can't send signal to process $p: $!\n")
+		if (!kill($s,$p));
 	}
     }
     unlink($pidf) if ($options{k}); # remove the pidfile on kills
     exit 0;
 }
+chdir("/");
 
 # now do the pidfile checking dance
 if (-f "$pidf")                     
@@ -131,47 +133,27 @@ seek(PIDF,0,'SEEK_SET');
 
 die("no configuration file exists. See $progname(1) for details.\n")
     if (!-e $rcfile);
-$config{syslog}="mail";
 
+dlogit("reading config file");
 # read in the config, setup dirs, logging, defaultkey etc.
 %config=&read_config;
+# log startup after config is read and logging prefs are known
 logit("$progname version $version starting");
 
-
-# install the handler for conf reread
-$SIG{'USR1'}=\&handle_reload;
-# and the termination-handler
-$SIG{'HUP'}=\&handle_term;
-$SIG{'INT'}=\&handle_term;
-$SIG{'QUIT'}=\&handle_term;
-$SIG{'TERM'}=\&handle_term;
-
 # fire up smtp server, iff not oneshot
-# fixme: pidfile stuff!
 if (!$options{o} && 
     $config{"ma-user"} && $config{"ma-pass"} && $config{"maport"})
 {
     # fork off the smtp-to-queue daemon
-    my $pid=fork;
-    if (!defined($pid))
-    {
-	die "cannot fork: $!\n";
-    }
-    elsif (!$pid)
-    {	
-	# run mailserver, which does never reload the config
-	$0=$listenername;
-	close STDIN;
-	close PIDF;		# clears the inherited lock
-	$SIG{'USR1'}=\&handle_term;
-	&accept_mail;
-    }
-    else
-    {
-	# parent updates pidfile with mailserver pid
-	print PIDF "$pid\n";
-    }
+    my $pid=&start_mailserver;
+    # we, parent, update the pidfile with mailserver pid
+    print PIDF "$pid\n";
 }
+
+# install the handlers for conf reread
+$SIG{'USR1'}=\&handle_reload;
+# and the termination-handler
+map { $SIG{$_}=\&handle_term; } qw(HUP INT QUIT TERM);
 
 if (!$options{o} && $config{"can-detach"})
 {
@@ -234,12 +216,13 @@ while (1)
 	    rename("$config{queuedir}/$file","$config{queuedir}/.$file")
 		|| &bailout("cant rename $config{queuedir}/$file: $!");
 	    alert("Problem with $config{queuedir}/$file",
-"Your mail \"$config{queuedir}/$file\" could not be processed successfully,
+"Your mail \"$config{queuedir}/$file\" could not be processed and 
 $progname has given up on it.
 Please review the following error details to determine what went wrong:\n\n",
 @res,
 "\n$progname has renamed the problematic mail to \"$config{queuedir}/.$file\";
-if you wish to retry rename it to an all-numeric filename. Otherwise you should delete the file.\n");
+if you want $progname to retry, rename it to an all-numeric filename. Otherwise you should delete the file.\n
+Please note that processing may have worked for SOME recipients already!\n");
 	}
 	else
 	{
@@ -297,10 +280,10 @@ sub sign_send
     {
 	@res=&sign_encrypt($signkey,$dumpfile,$output,());
 	last if (!@res || $res[0]!=1);	#  no error or fatal error
-	$debug && logit("gpg reported bad passphrase, retrying.");
+	dlogit("gpg reported bad passphrase, retrying.");
 	if (!$config{"use-agent"} && $config{"flush-secret"} && $signkey)
 	{
-	    $debug && logit("invalidating passphrase for $signkey");
+	    dlogit("invalidating passphrase for $signkey");
 	    my $cmd=sprintf($config{"flush-secret"},$signkey);
 	    system($cmd);	# ignore the flushing result; best effort only
 	}
@@ -355,10 +338,10 @@ sub crypt_send
     {
 	@res=&sign_encrypt($signkey,$dumpfile,$output,@{$rec_keys});
 	last if (!@res || $res[0]!=1);	#  no error or fatal error
-	$debug && logit("gpg reported bad passphrase, retrying.");
+	dlogit("gpg reported bad passphrase, retrying.");
 	if (!$config{"use-agent"} && $config{"flush-secret"} && $signkey)
 	{
-	    $debug && logit("invalidating passphrase for $signkey");
+	    dlogit("invalidating passphrase for $signkey");
 	    my $cmd=sprintf($config{"flush-secret"},$signkey);
 	    system($cmd);	# ignore the flushing result; best effort only
 	}
@@ -406,7 +389,7 @@ sub process_file
     if ($froms[0]->[4]=~/key=([0-9a-fA-FxX]+)/)
     {
 	$signkey=$1;
-	$debug && logit("local signkey override: $signkey");
+	dlogit("local signkey override: $signkey");
 	$in_ent->head->replace("from",$froms[0]->[3]);
     }
 
@@ -450,7 +433,7 @@ sub process_file
     my $newto=join(", ",map { $_->[3] } (@tos));
     my $newcc=join(", ",map { $_->[3] } (@ccs));
     $in_ent->head->replace("to",$newto);
-    $in_ent->head->replace("cc",$newcc);
+    $in_ent->head->replace("cc",$newcc) if ($newcc);
 
     # cry out loud if there is a problem with the submitted mail 
     # and no recipients were distinguishable...
@@ -570,7 +553,7 @@ sub process_file
 		      keys %actions))
     {
 	logit("sending mail (bcc,encrypted+signed with $signkey) to $bcc");
-	my @res=&crypt_send($in_ent,$cryptoin,$orig_header,$signkey,
+	my @res=&crypt_send($in_ent,$cryptoin,$orig_header,$fromaddr,$signkey,
 			    [$actions{$bcc}],$bcc);
 	return @res if (@res);
     }
@@ -603,13 +586,13 @@ sub findaction
 	}
 	# nothing configured? then default action
 	$actions{$addr}||=($config{defaultaction}||"none");
-	$debug && logit("action $actions{$addr} for $addr");
+	dlogit("action $actions{$addr} for $addr");
 
 	# blanket override? then override the config but not where
 	# "none" is specified
 	if ($override && $actions{$addr} ne "none")
 	{
-	    $debug && logit("override header: $override for $addr");
+	    dlogit("override header: $override for $addr");
 	    $actions{$addr}=$override;
 	}
 
@@ -618,15 +601,13 @@ sub findaction
 	{
 	    my $thisaction=$1;
 	    $actions{$addr}=$thisaction;
-	    $debug && 
-		logit("local override: action $thisaction for $addr");
+	    dlogit("local override: action $thisaction for $addr");
 	}
 
 	if ($a->[4] =~/key=([0-9a-fA-FxX]+)/)
 	{
 	    $specialkeys{$addr}=$1;
-	    $debug && 
-		logit("local key override: $specialkeys{$addr} for $addr");
+	    dlogit("local key override: $specialkeys{$addr} for $addr");
 	}
 
 	# now test for key existence and downgrade action to signonly
@@ -652,7 +633,7 @@ sub findaction
 	    if ($actions{$addr} ne "none")
 	    {
 		$actions{$addr}="signonly";
-		$debug && logit("downgrading to signonly for $addr");
+		dlogit("downgrading to signonly for $addr");
 	    }
 	}
     }
@@ -724,7 +705,7 @@ sub handle_term
     my ($sig)=@_;
 
     $sig="SIG$sig" if (!$options{o}); 
-    logit("$sig triggered termination, cleaning up");
+    logit("Termination requested ($sig), cleaning up");
     &cleanup($config{tempdir},1);
     close $config{logfh} if ($config{logfh});
     exit 0;
@@ -734,10 +715,20 @@ sub handle_term
 # no args or return value; intended as a sighandler.
 sub handle_reload
 {
-    logit("rereading configuration");
+    my ($sig)=@_;
+    logit("received SIG$sig, reloading");
     %config=&read_config;
-    logit("rereading keyring");
     %email2key=&read_keyring;
+    # restart mailserver if required
+    # also update pidfile
+    if ($config{"ma-user"} && $config{"ma-pass"} && $config{"maport"})
+    {
+	# fork off the smtp-to-queue daemon
+	my $pid=&start_mailserver;
+	open(PIDF,">$pidf") || &bailout("can't w-open $pidf: $!\n");
+	print PIDF "$$\n$pid\n";
+	close(PIDF);
+    }
 }
 
 # remove temporary stuff left behind in directory $what
@@ -812,8 +803,8 @@ sub read_config
 			"re"=>qr/$who/,
 			"action"=>$action,
 			"key"=>$key};
-	    $debug && logit("got override $action "
-			    .($key?"key $key ":"")."for $who");
+	    dlogit("got override $action "
+		   .($key?"key $key ":"")."for $who");
 	    next;
 	}
 
@@ -821,6 +812,7 @@ sub read_config
 	{
 	    my ($key,$value)=split(/\s+/,$_,2);
 	    $key=lc($key);
+	    $value=~s/^(\"|\')(.*)\1$/$2/;
 
 	    bailout("unknown config key \"$key\"")
 		if (!exists $options{$key});
@@ -907,7 +899,6 @@ sub read_config
 	    {
 		bailout("bad value \"$value\" for key \"$key\"")
 		    if (-e $value && !-w $value);
-		$value=undef if (!$value || $value=~/^(\'|\"){2}$/); 
 		if ($config{$key} ne $value) # deal with changing logfiles
 		{
 		    close($config{logfh}); 
@@ -915,7 +906,7 @@ sub read_config
 		}
 		$options{$key}=$value;
 	    }
-	    $debug && logit("got config $key=$value");
+	    dlogit("got config $key=$value");
 	}
     }
     close F;
@@ -976,13 +967,11 @@ sub read_keyring
 		}
 		
 		$id2key{$name}="0x$lastkey";
-		&logit("got key 0x$lastkey type $info[3] for $name")
-		    if ($debug);
+		dlogit("got key 0x$lastkey type $info[3] for $name");
 	    }
 	    else
 	    {
-		&logit("saved key 0x$lastkey, no address known yet")
-		    if ($debug);
+		dlogit("saved key 0x$lastkey, no address known yet");
 	    }
 	    next;
 	}
@@ -1001,13 +990,11 @@ sub read_keyring
 		}
 		
 		$id2key{$name}="0x$lastkey";
-		&logit("got key (uid) 0x$lastkey for $name")
-		    if ($debug);
+		dlogit("got key (uid) 0x$lastkey for $name");
 	    }
 	    else
 	    {
-		&logit("ignoring uid without valid address")
-		    if ($debug);
+		dlogit("ignoring uid without valid address");
 	    }
 	}
     }
@@ -1116,16 +1103,16 @@ sub sign_encrypt
 	{
 	    # child: dup stderr to stdout and exec gpg
 	    open STDERR, ">&",\*STDOUT 
-		or die "can't dup2 stderr onto stdout: $!\n";
+		or bailout("can't dup2 stderr onto stdout: $!\n");
 	    exec(@cmd);
-	    die "exec gpg failed: $!\n";
+	    bailout("exec gpg failed: $!\n");
 	}
 	# read the status stuff in and determine the passphrase required
 	for my $l (<F>)
 	{
 	    if ($l=~/^\[GNUPG:\] NEED_PASSPHRASE ([a-fA-F0-9]+) ([a-fA-F0-9]+) \d+ \d+$/)   
 	    {
-		$precmd=sprintf($config{"query-secret"},substr($2,8));
+		$precmd=sprintf($config{"query-secret"},"0x".substr($2,8));
 		push @cmd,"--passphrase-fd",0;
 		last;
 	    }
@@ -1147,9 +1134,9 @@ sub sign_encrypt
 	{
 	    # collapse stderr and stdout
 	    open STDERR, ">&",\*STDOUT 
-		or die "can't dup2 stderr onto stdout: $!\n";
+		or bailout("can't dup2 stderr onto stdout: $!\n");
 	    exec(@cmd);
-	    die "exec gpg failed: $!\n";
+	    bailout("exec gpg failed: $!\n");
 	}
 	else
 	{
@@ -1161,7 +1148,7 @@ sub sign_encrypt
 	    my $pidc=open(G,"-|"); 
 	    if (!defined($pidc))
 	    {
-		die "Error: couldn't fork: $!\n";
+		bailout("Error: couldn't fork: $!\n");
 	    }
 	    elsif (!$pidc)
 	    {
@@ -1172,11 +1159,11 @@ sub sign_encrypt
 	    # parent: we run gpg
 	    # dup stderr to stdout and exec gpg
 	    open STDERR, ">&",\*STDOUT 
-		or die "can't dup2 stderr onto stdout: $!\n";
+		or bailout("can't dup2 stderr onto stdout: $!\n");
 	    open STDIN, ">&", \*G 
-		or die "can't dup stdin onto child-pipe: $!\n";
+		or bailout("can't dup stdin onto child-pipe: $!\n");
 	    exec(@cmd);
-	    die "exec gpg failed: $!\n";
+	    bailout("exec gpg failed: $!\n");
 	}
     }
     # outermost parent: read gpg status info 
@@ -1188,7 +1175,7 @@ sub sign_encrypt
 	return 1
 	    if (grep(/(MISSING|BAD)_PASSPHRASE/,@output));
 	return (2,"Error: gpg terminated with $?",
-	      "Detailed error message:",join("\n",@output));
+	      "Detailed error messages:",@output);
     }
     return;
 }
@@ -1208,7 +1195,7 @@ sub logit
 	    $config{logfh}->autoflush(1);
 	}
 
-	print { $config{logfh} } scalar(localtime).join("\n\t",@msgs)."\n";
+	print { $config{logfh} } scalar(localtime)." ".join("\n\t",@msgs)."\n";
     }
 
     if ($config{syslog})
@@ -1220,6 +1207,11 @@ sub logit
     }
 }
 
+# debug log to stderr
+sub dlogit
+{
+    print STDERR join("\n",@_)."\n" if ($debug);
+}
 
 
 # alerts the user of some problem
@@ -1239,12 +1231,11 @@ sub alert
     }
     if ($config{"mail-on-error"})
     {
+	my $heading=shift @msgs;
 	my $out=join("\n",@msgs);
-
-	my $subject=$progname.": ".shift @msgs;
 	my $ent=MIME::Entity->build(From=>$config{"mail-on-error"},
 				  To=>$config{"mail-on-error"},
-				  Subject=>$subject,
+				  Subject=>($progname.": $heading"),
 				  Data=>\$out);
 	send_entity($ent,$config{"mail-on-error"},$config{"mail-on-error"});
     }
@@ -1263,19 +1254,43 @@ sub bailout
     die(scalar(localtime).join("\n\t",@msgs)."\n");
 }
 
+# returns pid of new mailserver process
+# dies if unsuccessful
+sub start_mailserver
+{
+    # fork off the smtp-to-queue daemon
+    my $pid=fork;
+    if (!defined($pid))
+    {
+	bailout("cannot fork: $!\n");
+    }
+    elsif (!$pid)
+    {	
+	# run mailserver, which does never reload the config
+	$0=$listenername;
+	close STDIN;
+	close PIDF;		# clears the inherited lock
+	map { $SIG{$_}='DEFAULT'; } qw(USR1 HUP INT QUIT TERM);
+	&accept_mail;
+    }
+    # parent
+    return $pid;
+}
+
 # run a receive-only mailserver on localhost and spool to queue
 # does not terminate except signalled
 sub accept_mail
 {
     my $server = IO::Socket::INET->new(Listen=>1,
 				       ReuseAddr=>1,
+				       LocalAddr=>"127.0.0.1",
 				       LocalPort=>$config{"maport"},);
     bailout("setting up listening port failed: $!") if (!$server);
     
     while(my $conn = $server->accept)
     {
 	my $esmtp = Net::Server::Mail::ESMTP->new(socket=>$conn);
-	$esmtp->register('Net::Server::Mail::ESMTP::Extension::plainAUTH');
+	$esmtp->register('Net::Server::Mail::ESMTP::plainAUTH');
 
 	$esmtp->set_callback(MAIL=>\&req_auth);
 	$esmtp->set_callback(RCPT=>\&req_auth);
@@ -1291,7 +1306,7 @@ sub accept_mail
 sub check_auth
 {
     my ($session,$user,$pwd)=@_;
-    return ($user eq $config{'ma-user'} && $pwd eq $config{'ma-pass'});
+    return ($user eq $config{'ma-user'} and $pwd eq $config{'ma-pass'});
 }
 
 sub req_auth
@@ -1315,7 +1330,7 @@ sub start_mail
     return(0,554,'No recipients given.') if (!@recipients);
     return(0,554,'No sender given.') if (!$sender);
 
-    my $qid=(Time::HiRes::gettimeofday)[1];
+    my $qid=join("",Time::HiRes::gettimeofday);
     my $fn=$config{queuedir}."/".$qid;
     if (!open(F,">$fn"))
     {
@@ -1351,7 +1366,7 @@ sub finish_mail
     undef $$dr;
 
     my $qid=$session->{DATA}->{qid};
-    if (!close {$session->{DATA}->{qfh}})
+    if (!close($session->{DATA}->{qfh}))
     {
 	alert("could not close queuefile $qid: $!");
 	return(0,450,"could not close queuefile");
@@ -1400,13 +1415,14 @@ with exception of the following commandline options:
 
 =item -d
 
-Enables debugging mode: extra information is written to kuvert's logfile
-and/or syslog.
+Enables debugging mode: extra debugging information is written to STDERR.
+(This is independent of normal logging.)
 
 =item -o 
 
 Enables one-shot mode: kuvert does not loop forever but processes
-only the current queue contents and then exits.
+only the current queue contents and then exits. Kuvert does also not
+start an SMTP listener in this mode.
 
 =item -r
 
