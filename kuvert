@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.21 2008/06/29 11:57:31 az Exp az $
+#   $Id: kuvert,v 2.22 2008/06/29 12:31:01 az Exp az $
 #--
 
 use strict;
@@ -868,16 +868,6 @@ with the new config file in place.\n");
 	    # dirs to create
 	    elsif ($key=~/^(queuedir|tempdir)$/)
 	    {
-		if (!-d $value)
-		{
-		    mkdir($value,0700) or bailout("cannot create $key $value: $!\n");
-		}
-		my @stat=stat($value);
-		if ($stat[4] != $< or ($stat[2]&0777) != 0700)
-		{
-		    bailout("$key $value does not belong to you or has bad mode.");
-		}
-		    
 		$options{$key}=$value;
 	    }
 	    # the rest are special cases
@@ -924,6 +914,21 @@ with the new config file in place.\n");
 	}
     }
     close F;
+
+    # post-config-reading directory fixes
+    for my $v ($options{queuedir},$options{tempdir})
+    {
+	if (!-d $v)
+	{
+	    mkdir($v,0700) or bailout("cannot create directory $v: $!\n");
+	}
+	my @stat=stat($v);
+	if ($stat[4] != $< or ($stat[2]&0777) != 0700)
+	{
+	    bailout("directory $v does not belong to you or has bad mode.");
+	}
+    }
+
     $options{overrides}=\@over;
     return %options;
 }
