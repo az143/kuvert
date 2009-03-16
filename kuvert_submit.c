@@ -1,5 +1,5 @@
 /*
- * $Id: kuvert_submit.c,v 1.9 2007/08/12 03:18:39 az Exp $
+ * $Id: kuvert_submit.c,v 2.0 2008/06/01 05:15:35 az Exp az $
  * 
  * this file is part of kuvert, a wrapper around your mta that
  * does pgp/gpg signing/signing+encrypting transparently, based
@@ -51,63 +51,76 @@ int main(int argc,char **argv)
    FILE *out;
    FILE *cf;
    struct stat statbuf;
-   int direct=1,norecips=0;
+   int direct=1,norecips=0,testmode=0,i;
 
    /* determine whether to queue stuff or to call sendmail
       directly: if there is no proper config file for kuvert in $HOME
-      go direct, otherwise we enqueue.  */
+      or if given -bv go direct, otherwise we enqueue.  */
    openlog(argv[0],LOG_NDELAY|LOG_PID,LOG_MAIL);
 
-   /* look for config file in $HOME */
-   pwentry=getpwuid(getuid());
-   if (!pwentry)
-      BAILOUT("getpwuid failed: %s",strerror(errno));
-    
-   /* open and scan the conffile for an queue-file definition 
-      if there is no conffile, kuvert wont work ever  */
-   if (snprintf(filen,sizeof(filen),"%s%s",pwentry->pw_dir,CONFFILE)==-1)
-      BAILOUT("overlong filename, suspicious",NULL);
-   if (!(cf=fopen(filen,"r")))	
+   for(i=1;i<argc;++i)
    {
-      /* no config file -> exec sendmail */
-      syslog(LOG_INFO,"user has no "CONFFILE" config file, running sendmail");
-   }
-   else
-   {
-      direct=0;
-      /* scan the lines for ^QUEUEDIR\s+ */
-      dirnp=NULL;
-      while(!feof(cf))
+      if (!strncmp(argv[i],"-bv",3))
       {
-	 p=fgets(buffer,sizeof(buffer)-1,cf);
-	 /* empty file? ok, we'll ignore it */
-	 if (!p)
-	    break;
-	
-	 if (!strncasecmp(buffer,"QUEUEDIR",sizeof("QUEUEDIR")-1))
-	 {
-	    p=buffer+sizeof("QUEUEDIR")-1;
-	    for(;*p && isspace(*p);++p)
-	       ;
-	    if (*p)
-	    {
-	       dirnp=p;
-	       /* strip the newline from the string */
-	       for(;*p && *p != '\n';++p)
-		  ;
-	       if (*p == '\n')
-		  *p=0;
-	       /* strip eventual trailing whitespace */
-	       for(--p;p>dirnp && isspace(*p);--p)
-		  *p=0;
-	    }
-	    /* empty dir? ignore it */
-	    if (strlen(dirnp)<2)
-	       dirnp=NULL;
-	    break;
-	 }
+	 testmode=1;
+	 syslog(LOG_INFO,"-bv argument present, running sendmail.");
+	 break;
       }
-      fclose(cf);
+   }
+   
+   if (!testmode)
+   {
+      /* look for config file in $HOME */
+      pwentry=getpwuid(getuid());
+      if (!pwentry)
+	 BAILOUT("getpwuid failed: %s",strerror(errno));
+      
+      /* open and scan the conffile for an queue-file definition 
+	 if there is no conffile, kuvert wont work ever  */
+      if (snprintf(filen,sizeof(filen),"%s%s",pwentry->pw_dir,CONFFILE)==-1)
+	 BAILOUT("overlong filename, suspicious",NULL);
+      if (!(cf=fopen(filen,"r")))	
+      {
+	 /* no config file -> exec sendmail */
+	 syslog(LOG_INFO,"user has no "CONFFILE" config file, running sendmail");
+      }
+      else
+      {
+	 direct=0;
+	 /* scan the lines for ^QUEUEDIR\s+ */
+	 dirnp=NULL;
+	 while(!feof(cf))
+	 {
+	    p=fgets(buffer,sizeof(buffer)-1,cf);
+	    /* empty file? ok, we'll ignore it */
+	    if (!p)
+	       break;
+	    
+	    if (!strncasecmp(buffer,"QUEUEDIR",sizeof("QUEUEDIR")-1))
+	    {
+	       p=buffer+sizeof("QUEUEDIR")-1;
+	       for(;*p && isspace(*p);++p)
+		  ;
+	       if (*p)
+	       {
+		  dirnp=p;
+		  /* strip the newline from the string */
+		  for(;*p && *p != '\n';++p)
+		     ;
+		  if (*p == '\n')
+		     *p=0;
+		  /* strip eventual trailing whitespace */
+		  for(--p;p>dirnp && isspace(*p);--p)
+		     *p=0;
+	       }
+	       /* empty dir? ignore it */
+	       if (strlen(dirnp)<2)
+		  dirnp=NULL;
+	       break;
+	    }
+	 }
+	 fclose(cf);
+      }
    }
 
    /* direct to sendmail requested? */

@@ -18,7 +18,8 @@ kuvert to intercept and process the outgoing mails. Please see your MUA's
 documentation about how to override the MTA to be used.
 
 Kuvert_submit transparently invokes C</usr/sbin/sendmail> directly
-if it cannot find a ~/.kuvert configuration file. Otherwise, it enqueues 
+if it cannot find a ~/.kuvert configuration file, or if the -bv option
+is given. Otherwise, it enqueues 
 the email in the queue directory specified in the configuration file. 
 If that fails or if the configuration file is invalid, kuvert_submit prints an 
 error message to STDERR and terminates with exit code 1. 
@@ -30,7 +31,7 @@ Kuvert_submit also logs messages to syslog with the facility "mail".
 
 If it runs the MTA directly then kuvert_submit passes all options through 
 to /usr/sbin/sendmail. Otherwise, it ignores all options except 
--f and -t.
+-f and -t (and -bv which triggers a direct sendmail pass-through).
 
 =over
 
