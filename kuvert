@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.22 2008/06/29 12:31:01 az Exp az $
+#   $Id: kuvert,v 2.23 2008/08/31 06:39:26 az Exp az $
 #--
 
 use strict;
@@ -650,7 +650,7 @@ sub extract_addresses
 
     for my $a (Mail::Address->parse(@lines))
     {
-	my ($addr,$comment,$phrase)=($a->address,$a->comment,$a->phrase);
+	my ($addr,$comment,$phrase)=(lc($a->address),$a->comment,$a->phrase);
 	# some name "directive,directive..." <an@addre.ss> 
 	if ($phrase=~s/\s*\"([^\"]+)\"\s*//)
 	{
