@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.23 2008/08/31 06:39:26 az Exp az $
+#   $Id: kuvert,v 2.24 2009/10/20 06:43:04 az Exp az $
 #--
 
 use strict;
@@ -764,6 +764,9 @@ sub read_config
 	 identify=>undef,
 	 defaultaction=>"none",
 	 msserver=>undef,
+	 msuser=>undef,
+	 mspass=>undef,
+	 'mspass-from-query-secret'=>undef,
 	 msport=>587,
 	 msp=>"/usr/sbin/sendmail -om -oi -oem",
 	 "use-agent"=>undef,
@@ -832,7 +835,7 @@ with the new config file in place.\n");
 		if (!exists $options{$key});
 
 	    # booleans
-	    if ($key =~ /^(identify|use-agent|alwaystrust|can-detach)$/)
+	    if ($key =~ /^(identify|use-agent|alwaystrust|can-detach|mspass-from-query-secret)$/)
 	    {
 		bailout("bad value \"$value\" for key \"$key\"")
 		    if ($value !~ /^(0|1|t|f|on|off)$/i);
@@ -846,7 +849,7 @@ with the new config file in place.\n");
 		$options{$key}=$value;
 	    }
 	    # nothing or string
-	    elsif ($key =~ /^(ma-pass|ma-user|mail-on-error)$/)
+	    elsif ($key =~ /^(ma-pass|ma-user|mail-on-error|msserver|msuser|mspass)$/)
 	    {
 		$options{$key}=$value;
 	    }
@@ -884,13 +887,6 @@ with the new config file in place.\n");
 		    if ($value!~/^(fallback|fallback-all|signonly|none)$/);
 		$options{$key}=$value;
 	    }
-	    elsif ($key eq "msserver")
-	    {
-		# crude check for ip or host name
-		bailout("bad value \"$value\" for key \"$key\"")
-		     if ($value!~/^([0-9:.]+|[a-z0-9.]+)$/);
-		$options{$key}=$value;
-	    }
 	    elsif ($key eq "syslog")
 	    {
 		# syslog: nothing or a facility
@@ -914,6 +910,13 @@ with the new config file in place.\n");
 	}
     }
     close F;
+
+    # post-config-reading sanity checking
+    if ($options{msserver} && $options{msuser})
+    {
+	bailout("smtp auth requires mspass or mspass-from-query-secret options")
+	    if (!$options{mspass} && !$options{"mspass-from-query-secret"});
+    }	
 
     # post-config-reading directory fixes
     for my $v ($options{queuedir},$options{tempdir})
@@ -1082,8 +1085,45 @@ sub send_entity
 			     Hello=>$dom);
 	return("cannot connect to mail server ".$config{msserver}.": $!")
 	    if (!$s);
+
+	# do smtp auth if asked to
+	if ($config{msuser})
+	{
+	    my $authed;
+	    while (!$authed)
+	    {
+		if (!$config{mspass} && $config{"mspass-from-query-secret"})
+		{
+		    my $cmd=sprintf($config{"query-secret"},"smtp-password");
+		    $config{mspass}=`$cmd`;
+
+		    return("couldn't get smtp password via query-secret: $!") 
+			if (!$config{mspass});
+		    chomp($config{mspass});
+		}
+
+		$authed=$s->auth($config{msuser},$config{mspass});
+		
+		# bailout if we can't requery
+		if (!$authed)
+		{
+		    # get rid of the apparently dud password and try again
+		    delete $config{mspass};
+		    if ($config{"mspass-from-query-secret"})
+		    {
+			my $cmd=sprintf($config{"flush-secret"},"smtp-password");
+			system($cmd);	# ignore the flushing result; best effort only
+		    }
+		    else
+		    {
+			return("smtp auth failed: ".$s->code." ".$s->message);
+		    }
+		}
+	    }
+	}
+
 	$s->mail($from) 
-	    or return("mailserver rejected our from address \"$from\"");
+	    or return("mailserver rejected our from address \"$from\": ".$s->code." ".$s->message);
 	my @okrecips=$s->to(@recips, { SkipBad => 1 });
 	if (@okrecips != @recips)
 	{
@@ -1093,9 +1133,10 @@ sub send_entity
 	    my @missed=grep $seen{$_}==1, keys %seen;
 	    
 	    return ("mailserver rejected some recipients!",
-		    "rejected: ".join(", ",@missed));
+		    "rejected: ".join(", ",@missed),
+		    "info: ".$s->code." ".$s->message);
 	}
-	$s->data($ent->as_string) or return("mailserver rejected our data");
+	$s->data($ent->as_string) or return("mailserver rejected our data: ".$s->code." ".$s->message);
 	$s->quit;
     }
     else
@@ -1834,11 +1875,30 @@ See msp below.
 The TCP port on which the Mail Submission Server listens. Default: 587.
 Ignored if msserver is not set.
 
+=item msuser <username>
+
+The username to use for SMTP authentication at the Mail Submission Server.
+SMTP Auth is not attempted if msuser isn't set. Ignored if msserver is not
+set.
+
+=item mspass <password>
+
+The password for SMTP authentication. Ignored if msserver or msuser are not set.
+
+=item mspass-from-query-secret <boolean>
+
+Whether the mspass should be retrieved using the query-secret program
+instead of giving the mspass in the config file. Ignored if msserver or 
+msuser are not set. If this option is set, the query-secret program will be used to ask for 
+the "smtp-password" when the first mail is processed. The password will be
+cached if authentication succeeds or you will be asked again, until 
+authentication succeeds.
+
 =item msp <program-path and args>
 
 Defines the program kuvert should use to deliver email. 
-Default: "/usr/sbin/sendmail -om -oi -oem"
-Ths is ignored if msserver is set. The argument must include the 
+Default: "/usr/sbin/sendmail -om -oi -oem".
+This is ignored if msserver is set. The argument must include the 
 full path to the program, and the program must accept the common mail transfer
 agent arguments as defined in the Linux Standards Base 
 (see L<http://refspecs.linux-foundation.org/LSB_2.0.0/LSB-Core/LSB-Core.html#BASELIB-SENDMAIL-1>).
