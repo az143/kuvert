@@ -33,11 +33,12 @@ on other systems you need to do the following:
 
 you need perl perl 5.004+, gpg and a raft of perl modules:
 MIME::Parser, Mail::Address, Net::SMTP, Sys::Hostname, Net::Server::Mail,
-IO::Socket::INET, Filehandle, File::Slurp, File::Temp, Fcntl and Time::HiRes.
+Authen::SASL, IO::Socket::INET, Filehandle, File::Slurp, File::Temp, Fcntl 
+and Time::HiRes.
 some of those are part of a standard perl intall, others you'll have to
 get from your nearest CPAN archive and install.
-optional: get robert bihlmeyer's quintuple-agent, the linux-kernel keyutils 
-package, the gpg-agent or some other passphrase cache of your choice.
+optional: get linux-kernel keyutils package, the gpg-agent or some 
+other passphrase cache of your choice.
 
 run make, make install DESTDIR=/ as root
 -> kuvert, kuvert_submit, the manpages and one helper module 
