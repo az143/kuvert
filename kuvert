@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.24 2009/10/20 06:43:04 az Exp az $
+#   $Id: kuvert,v 2.25 2010/09/16 05:17:22 az Exp az $
 #--
 
 use strict;
@@ -266,10 +266,12 @@ sub sign_send
 			     "application/pgp-signature");
     $newent->head->mime_attr("content-Type.Micalg"=>"pgp-sha1");
 
-    $newent->preamble(["This is a multi-part message in MIME format.\n",
+    # set/suppress the preamble
+    $newent->preamble($config{"preamble"}?
+		      ["This is a multi-part message in MIME format.\n",
 		       "It has been signed conforming to RFC3156.\n",
-		       "You need GPG to check the signature.\n"]);
-
+		       "You need GPG to check the signature.\n"]:[]);
+	
     # add the passed entity as part
     $newent->add_part($ent);
 
@@ -322,11 +324,12 @@ sub crypt_send
 			     &MIME::Entity::make_boundary);
     $newent->head->mime_attr("Content-Type.Protocol"=>
 			     "application/pgp-encrypted");
-    # set the new preamble
-    $newent->preamble(["This is a multi-part message in MIME format.\n",
+    # set/suppress the new preamble
+    $newent->preamble($config{"preamble"}?
+		      ["This is a multi-part message in MIME format.\n",
 		       "It has been encrypted conforming to RFC3156.\n",
-		       "You need GPG to view the content.\n"]);
-
+		       "You need GPG to view the content.\n"]:[]);
+    
     # attach the needed dummy-part
     $newent->attach(Type=>"application/pgp-encrypted",
 		    Data=>"Version: 1\n",
@@ -783,6 +786,7 @@ sub read_config
 	 maport=>2587,
 	 "ma-user"=>undef,
 	 "ma-pass"=>undef,
+	 preamble=>1,
 	 );
     my @over;
 
@@ -835,7 +839,7 @@ with the new config file in place.\n");
 		if (!exists $options{$key});
 
 	    # booleans
-	    if ($key =~ /^(identify|use-agent|alwaystrust|can-detach|mspass-from-query-secret)$/)
+	    if ($key =~ /^(identify|use-agent|alwaystrust|can-detach|mspass-from-query-secret|preamble)$/)
 	    {
 		bailout("bad value \"$value\" for key \"$key\"")
 		    if ($value !~ /^(0|1|t|f|on|off)$/i);
@@ -1858,6 +1862,11 @@ This directory is completely emptied after processing an email.
 
 Whether kuvert should add an X-Mailer header to outbound emails. 
 Default: false. The X-Mailer header consists of the program name and version.
+
+=item preamble <boolean>
+
+Whether kuvert should include an explanatory preamble in the generated
+MIME mail. Default: true
 
 =item interval <number>
 
