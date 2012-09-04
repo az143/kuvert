@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.25 2010/09/16 05:17:22 az Exp az $
+#   $Id: kuvert,v 2.26 2012/02/21 02:19:28 az Exp az $
 #--
 
 use strict;
@@ -50,6 +50,8 @@ my($username,$home)=(getpwuid($<))[0,7];
 
 # where is the configuration file
 my $rcfile="$home/.kuvert";
+
+my $timeout=600;		# seconds to wait for gpg
 
 # configuration directives
 my (%config,$debug,%email2key);
@@ -1275,10 +1277,22 @@ sub sign_encrypt
 	    bailout("exec gpg failed: $!\n");
 	}
     }
-    # outermost parent: read gpg status info 
-    my @output=<F>;
-    close(F);
-    if ($?)
+    # outermost parent: read gpg status info
+    my @output;
+    eval { 
+	local $SIG{ALRM}=sub { die "alarm\n"; };
+	alarm $timeout;
+	@output=<F>;
+	alarm 0;
+        close(F);
+    };
+    if ($@)
+    {
+	logit("gpg timeout!");
+	kill("TERM",$pid);
+	return 1;
+    }
+    elsif ($?)
     {
 	#  no complaints if gpg just dislikes the passphrase
 	return 1
