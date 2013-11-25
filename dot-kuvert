@@ -1,0 +1,77 @@
+# ~/.kuvert: example configuration file for kuvert v2
+
+# options are given without leading whitespace
+
+# which key to sign with by default
+defaultkey 0x1234abcd
+
+# logging to syslog, which facility? defaults to no syslog
+syslog mail
+
+# no separate logfile
+logfile ""
+
+# who gets error reports
+mail-on-error you@some.domain
+
+# where to spool mails and temporary files
+queuedir /home/az/kuvert_queue
+tempdir  /tmp/kuvert_temp
+
+# how often to check the queue, in seconds
+interval 60
+
+# add an x-mailer header?
+identify f
+
+# add the explanatory mime preamble? 
+preamble f
+
+# how to submit outbound mail: 
+#
+# 1. via smtp 
+# settings: msserver, msport, ssl,
+# ssl-cert, ssl-key, ssl-ca;
+# authenticating as msuser, mspass
+#
+# msserver some.server.com
+# msport 587
+# ssl starttls
+# ssl-key  mycerts/my.key.pem
+# ssl-cert mycerts/my.cert.pem
+# msuser smtp-username
+# mspass smtp-password
+# mspass-from-query-secret f
+# 
+# 2. by using the msp program
+#
+msp /usr/sbin/sendmail -om -oi -oem
+
+can-detach t
+# maport 2587
+# ma-user yourname
+# ma-pass somethingSECRET
+
+defaultaction fallback-all
+
+alwaystrust t
+
+use-agent t
+query-secret /usr/bin/q-agent get %s
+flush-secret /usr/bin/q-agent delete %s
+
+# action specifications for recipients
+# are given with some leading whitespace
+
+# multiple keys for somebody and you want a specific one?
+ somebody@with.many.keys fallback,0x1234abcd
+
+# those don't want gpg-signed stuff
+ @somewhere.com none
+
+# signed but not encrypted
+ (he|they|others)@there.com	signonly
+
+# majordomo and similar mailinglist systems get plain mail
+ (majordomo|-request)@	none
+
