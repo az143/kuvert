@@ -4,7 +4,7 @@
 # does gpg signing/signing+encrypting transparently, based
 # on the content of your public keyring(s) and your preferences.
 #
-# copyright (c) 1999-2008 Alexander Zangerl <az@snafu.priv.at>
+# copyright (c) 1999-2013 Alexander Zangerl <az@snafu.priv.at>
 #
 #   This program is free software; you can redistribute it and/or modify
 #   it under the terms of the GNU General Public License version 2
@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.27 2012/09/04 10:27:32 az Exp az $
+#   $Id: kuvert,v 2.28 2013/11/25 11:48:37 az Exp az $
 #--
 
 use strict;
