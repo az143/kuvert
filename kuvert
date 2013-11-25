@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.26 2012/02/21 02:19:28 az Exp az $
+#   $Id: kuvert,v 2.27 2012/09/04 10:27:32 az Exp az $
 #--
 
 use strict;
@@ -28,7 +28,7 @@ use Fcntl qw(:flock);
 use Getopt::Std;
 use MIME::Parser;		# for parsing the mime-stream
 use Mail::Address;		# for parsing to and cc-headers
-use Net::SMTP;			# for sending via smtp
+use Net::SMTPS;			# for sending via smtp, which ssl
 use Sys::Hostname;		# ditto
 use Net::Server::Mail::ESMTP;	# for receiving via smtp
 use IO::Socket::INET;		# ditto
@@ -771,6 +771,10 @@ sub read_config
 	 msserver=>undef,
 	 msuser=>undef,
 	 mspass=>undef,
+	 ssl=>undef,
+	 "ssl-cert"=>undef,
+	 "ssl-key"=>undef,
+	 "ssl-ca"=>undef,
 	 'mspass-from-query-secret'=>undef,
 	 msport=>587,
 	 msp=>"/usr/sbin/sendmail -om -oi -oem",
@@ -855,7 +859,7 @@ with the new config file in place.\n");
 		$options{$key}=$value;
 	    }
 	    # nothing or string
-	    elsif ($key =~ /^(ma-pass|ma-user|mail-on-error|msserver|msuser|mspass)$/)
+	    elsif ($key =~ /^(ma-pass|ma-user|mail-on-error|msserver|ssl(-cert|-key|-ca)?|msuser|mspass)$/)
 	    {
 		$options{$key}=$value;
 	    }
@@ -1087,8 +1091,12 @@ sub send_entity
     {
 	my $dom=hostname;
 
-	my $s=Net::SMTP->new($config{msserver},Port=>$config{msport},
-			     Hello=>$dom);
+	my $s=Net::SMTPS->new( $config{msserver}, Port => $config{msport},
+			       Hello => $dom,
+			       doSSL => $config{ssl},
+			       SSL_key_file => $config{"ssl-key"},
+			       SSL_cert_file => $config{"ssl-cert"},
+			       SSL_ca_file => $config{"ssl-ca"} );
 	return("cannot connect to mail server ".$config{msserver}.": $!")
 	    if (!$s);
 
@@ -1897,6 +1905,24 @@ See msp below.
 
 The TCP port on which the Mail Submission Server listens. Default: 587.
 Ignored if msserver is not set.
+
+=item ssl <string>
+
+Whether SSL or STARTTLS are to be used for outbound SMTP submission.
+The value must be either "starttls" to use STARTTLS or "ssl" for raw SSL.
+SSL encryption is not used if this option is unset.
+
+=item ssl-cert <client cert path.pem>
+
+=item ssl-key <client key path.pem>
+
+=item ssl-ca <ca cert path.pem>
+
+If an SSL client certificate is to be presented to the SMTP server, set
+both ssl-cert and ssl-key. If your system-wide CA certificate setup doesn't
+include the certificate your SMTP server uses, set ssl-ca to point to a
+PEM file containing all the relevant CA certificates. All these are ignored
+if the ssl option isn't set.
 
 =item msuser <username>
 
