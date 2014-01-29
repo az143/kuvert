@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.28 2013/11/25 11:48:37 az Exp az $
+#   $Id: kuvert,v 2.29 2013/11/25 11:50:08 az Exp az $
 #--
 
 use strict;
@@ -911,7 +911,7 @@ with the new config file in place.\n");
 		    if (-e $value && !-w $value);
 		if ($config{$key} ne $value) # deal with changing logfiles
 		{
-		    close($config{logfh}); 
+		    close($config{logfh}) if (defined $config{logfh});
 		    delete $config{logfh};
 		}
 		$options{$key}=$value;
@@ -1323,6 +1323,8 @@ sub logit
 	if (!$config{logfh})	# not open yet?
 	{
 	    $config{logfh}=FileHandle->new(">>$config{logfile}");
+	    die "can't open logfile $config{logfile}: $!\n" 
+		if (!$config{logfh});
 	    $config{logfh}->autoflush(1);
 	}
 
