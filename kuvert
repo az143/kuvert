@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.30 2014/01/29 11:31:35 az Exp az $
+#   $Id: kuvert,v 2.31 2014/07/15 10:39:21 az Exp az $
 #--
 
 use strict;
@@ -364,7 +364,7 @@ sub crypt_send
 	    system($cmd);	# ignore the flushing result; best effort only
 	}
     }
-    return @res[1..$#res] if (@res || $res[0]); # fatal error: give up
+    return @res[1..$#res] if ($res[0]); # fatal error: give up
     
     # attach the encrypted data
     $newent->attach(Type => "application/octet-stream",
