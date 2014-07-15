@@ -4,7 +4,7 @@
 # does gpg signing/signing+encrypting transparently, based
 # on the content of your public keyring(s) and your preferences.
 #
-# copyright (c) 1999-2013 Alexander Zangerl <az@snafu.priv.at>
+# copyright (c) 1999-2014 Alexander Zangerl <az@snafu.priv.at>
 #
 #   This program is free software; you can redistribute it and/or modify
 #   it under the terms of the GNU General Public License version 2
@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.29 2013/11/25 11:50:08 az Exp az $
+#   $Id: kuvert,v 2.30 2014/01/29 11:31:35 az Exp az $
 #--
 
 use strict;
@@ -52,6 +52,17 @@ my($username,$home)=(getpwuid($<))[0,7];
 my $rcfile="$home/.kuvert";
 
 my $timeout=600;		# seconds to wait for gpg
+
+# from rfc4880, section 9.4. required for multipart/signed
+# to translate gpg's numeric status output into names that
+# rfc3156 likes
+my %hashalgos = (1 => "pgp-md5",
+		 2 => "pgp-sha1",
+		 3 => "pgp-ripemd160",
+		 8 => "pgp-sha256",
+		 9 => "pgp-sha384",
+		 10 => "pgp-sha512",
+		 11 => "pgp-sha224");
 
 # configuration directives
 my (%config,$debug,%email2key);
@@ -266,7 +277,6 @@ sub sign_send
 			     &MIME::Entity::make_boundary);
     $newent->head->mime_attr("Content-Type.Protocol"=>
 			     "application/pgp-signature");
-    $newent->head->mime_attr("content-Type.Micalg"=>"pgp-sha1");
 
     # set/suppress the preamble
     $newent->preamble($config{"preamble"}?
@@ -283,7 +293,7 @@ sub sign_send
     while (1)
     {
 	@res=&sign_encrypt($signkey,$dumpfile,$output,());
-	last if (!@res || $res[0]!=1);	#  no error or fatal error
+	last if ($res[0]!=1);	#  no error or fatal error
 	dlogit("gpg reported bad passphrase, retrying.");
 	if (!$config{"use-agent"} && $config{"flush-secret"} && $signkey)
 	{
@@ -292,7 +302,10 @@ sub sign_send
 	    system($cmd);	# ignore the flushing result; best effort only
 	}
     }
-    return @res[1..$#res] if (@res || $res[0]); # fatal error: give up
+    my $hashname = $res[1];
+    return @res[1..$#res] if ($res[0]); # fatal error: give up
+
+    $newent->head->mime_attr("Content-Type.Micalg"=>$hashname);
 
     # attach the signature
     $newent->attach(Type => "application/pgp-signature",
@@ -342,7 +355,7 @@ sub crypt_send
     while (1)
     {
 	@res=&sign_encrypt($signkey,$dumpfile,$output,@{$rec_keys});
-	last if (!@res || $res[0]!=1);	#  no error or fatal error
+	last if ($res[0]!=1);	#  no error or fatal error
 	dlogit("gpg reported bad passphrase, retrying.");
 	if (!$config{"use-agent"} && $config{"flush-secret"} && $signkey)
 	{
@@ -437,8 +450,8 @@ sub process_file
     # leak directives
     my $newto=join(", ",map { $_->[3] } (@tos));
     my $newcc=join(", ",map { $_->[3] } (@ccs));
-    $in_ent->head->replace("to",$newto);
-    $in_ent->head->replace("cc",$newcc) if ($newcc);
+    $in_ent->head->replace("To",$newto);
+    $in_ent->head->replace("Cc",$newcc) if ($newcc);
 
     # cry out loud if there is a problem with the submitted mail 
     # and no recipients were distinguishable...
@@ -695,7 +708,7 @@ sub qp_fix_parts
 	    ne "us-ascii")
 	{
 	    return("changing Content-Transfer-Encoding failed")
-		if ($entity->head->mime_attr("content-transfer-encoding"
+		if ($entity->head->mime_attr("Content-Transfer-Encoding"
 					     => "quoted-printable")
 		    !="quoted-printable");
 	}
@@ -1004,7 +1017,7 @@ sub read_keyring
     
     my @tmp=`gpg -q --batch --list-keys --with-colons --no-expensive-trust-checks 2>$tf`;
     bailout("keyring reading failed: $?",(-r $tf && readfile($tf))) 
-	if ($?);
+	if ($? or $?>>8);
     logit("finished reading keyring");
     
     my ($lastkey,$lasttype);
@@ -1168,7 +1181,7 @@ sub send_entity
 	    my @cmd=split(/\s+/,$config{msp});
 	    push @cmd,'-f',$from;
 	    push @cmd,@recips;
-	    exec(@cmd) || return("error executing msp: $!");
+	    exec(@cmd) or return("error executing msp: $!");
 	}
     }
     return;
@@ -1180,7 +1193,8 @@ sub send_entity
 # input must be existing filename, outfile must not exist.
 # signkey overrides config-defaultkey, and is optional.
 # uses global %config
-# returns: undef if ok, 1 if bad passphrase, (2,errorinfo) otherwise
+# returns: (undef,hashalg) if ok, (1,undef) if bad passphrase, 
+#(2,errorinfo) otherwise
 sub sign_encrypt
 {
     my ($signkey,$infile,$outfile,@recips)=@_;
@@ -1223,8 +1237,7 @@ sub sign_encrypt
 	    # child: dup stderr to stdout and exec gpg
 	    open STDERR, ">&",\*STDOUT 
 		or bailout("can't dup2 stderr onto stdout: $!\n");
-	    exec(@cmd);
-	    bailout("exec gpg failed: $!\n");
+	    exec(@cmd) or bailout("exec gpg failed: $!\n");
 	}
 	# read the status stuff in and determine the passphrase required
 	for my $l (<F>)
@@ -1254,8 +1267,7 @@ sub sign_encrypt
 	    # collapse stderr and stdout
 	    open STDERR, ">&",\*STDOUT 
 		or bailout("can't dup2 stderr onto stdout: $!\n");
-	    exec(@cmd);
-	    bailout("exec gpg failed: $!\n");
+	    exec(@cmd) or bailout("exec gpg failed: $!\n");
 	}
 	else
 	{
@@ -1272,8 +1284,7 @@ sub sign_encrypt
 	    elsif (!$pidc)
 	    {
 		# child: run query prog with stderr separated
-		exec($precmd);
-		die("exec $precmd failed: $!\n");
+		exec($precmd) or die("exec $precmd failed: $!\n");
 	    }
 	    # parent: we run gpg
 	    # dup stderr to stdout and exec gpg
@@ -1281,8 +1292,7 @@ sub sign_encrypt
 		or bailout("can't dup2 stderr onto stdout: $!\n");
 	    open STDIN, ">&", \*G 
 		or bailout("can't dup stdin onto child-pipe: $!\n");
-	    exec(@cmd);
-	    bailout("exec gpg failed: $!\n");
+	    exec(@cmd) or bailout("exec gpg failed: $!\n");
 	}
     }
     # outermost parent: read gpg status info
@@ -1298,17 +1308,30 @@ sub sign_encrypt
     {
 	logit("gpg timeout!");
 	kill("TERM",$pid);
-	return 1;
+	return (1,undef);
     }
-    elsif ($?)
+    elsif ($? or $?>>8)
     {
 	#  no complaints if gpg just dislikes the passphrase
-	return 1
+	return (1,undef)
 	    if (grep(/(MISSING|BAD)_PASSPHRASE/,@output));
+
 	return (2,"Error: gpg terminated with $?",
 	      "Detailed error messages:",@output);
     }
-    return;
+
+    if (my @infoline = grep(/^\[GNUPG:\] SIG_CREATED/, @output))
+    {
+	# output format:
+	# [GNUPG:] SIG_CREATED <type> <pubkey algo> <hash algo> <class> <timestamp> <key fpr>
+	my @infoparts = split(/\s+/,$infoline[0]);
+	my $hashname = $hashalgos{$infoparts[4]};
+	return (undef,$hashname) if defined $hashname;
+    }
+
+    # cheap catch-all, including unknown hash algo identifiers
+    return (2, "Error: gpg did not complete the operation",
+	    "Detailed error messages:",@output);
 }
 
 # logs the argument strings to syslog and/or the logfile
@@ -1665,10 +1688,9 @@ Kuvert does not handle your precious keys' passphrases. You can either
 elect to use gpg-agent as an (on-demand or caching) passphrase store, or
 you can tell kuvert what program it should run to query for a passphrase
 when required. Such a query program will be run in a pipeline to GnuPG, and 
-kuvert will not access, store or cache the passphrases themselves: 
-there are better programs available for secret caching, eg. quintuple-agent 
-or the Linux in-kernel keystorage (L<keyctl(1)>). Kuvert interfaces 
-cleanly with these.
+kuvert will not access, store or cache the passphrases themselves:
+there are better options available for secret caching, for example
+the Linux in-kernel keystorage (L<keyctl(1)>).
 
 =head2 How Kuvert Decides What (Not) To Do
 
@@ -1956,11 +1978,14 @@ agent arguments as defined in the Linux Standards Base
 
 =item can-detach <boolean>
 
-Indicates to kuvert that it can background itself on startup, detaching
-from the terminal. Default: false. This is possible only if you either
-delegate passphrase handling to gpg-agent, or if your secret-query program
-does not require interaction via the original terminal (e.g. if it is an
-X11 program with its own window).
+Indicates to kuvert that it can background itself on startup,
+detaching from the terminal. Default: false. 
+
+Detaching works only if your chosen mechanism for passphrase entry
+doesn't require interaction via the original terminal. This is the
+case if you if you delegate passphrase handling to gpg-agent and
+configure it for X11 pinentry, or if your secret-query program is an
+X11 program with its own window.
 
 =item maport <portnumber>
 
@@ -2091,7 +2116,7 @@ holds the pid of a running kuvert daemon.
 
 =head1 SEE ALSO
 
-L<gpg(1)>, L<kuvert_submit(1)>, RFC3156, RFC2440, RFC2015
+L<gpg(1)>, L<kuvert_submit(1)>, RFC3156, RFC4880, RFC2015
 
 =head1 AUTHOR
 
@@ -2099,7 +2124,7 @@ Alexander Zangerl <az@snafu.priv.at>
 
 =head1 COPYRIGHT AND LICENCE
 
-copyright 1999-2008 Alexander Zangerl <az@snafu.priv.at>
+copyright 1999-2014 Alexander Zangerl <az@snafu.priv.at>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License version 2
