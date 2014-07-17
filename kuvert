@@ -19,7 +19,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.31 2014/07/15 10:39:21 az Exp az $
+#   $Id: kuvert,v 2.32 2014/07/15 10:55:55 az Exp az $
 #--
 
 use strict;
@@ -1983,7 +1983,7 @@ detaching from the terminal. Default: false.
 
 Detaching works only if your chosen mechanism for passphrase entry
 doesn't require interaction via the original terminal. This is the
-case if you if you delegate passphrase handling to gpg-agent and
+case if you delegate passphrase handling to gpg-agent and
 configure it for X11 pinentry, or if your secret-query program is an
 X11 program with its own window.
 
