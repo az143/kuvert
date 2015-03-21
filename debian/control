@@ -1,0 +1,19 @@
+Source: kuvert
+Section: mail
+Priority: extra
+Maintainer: Alexander Zangerl <az@debian.org>
+Build-Depends: debhelper (>= 8), dpkg-dev (>= 1.16.1~)
+Standards-Version: 3.9.5.0
+
+Package: kuvert
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, gnupg (>= 1.0.6), sendmail | mail-transport-agent, libnet-smtps-perl, ${perl:Depends}, libmailtools-perl, libmime-tools-perl, libfile-slurp-perl, libnet-server-mail-perl, libauthen-sasl-perl
+Suggests: keyutils 
+Homepage: http://www.snafu.priv.at/mystuff/kuvert/
+Description: wrapper that encrypts or signs outgoing mail
+ kuvert automatically signs and/or encrypts outgoing mail using
+ the PGP/MIME standard (RFC3156), based on the availability
+ of the recipient's key in your keyring. Other than similar wrappers,
+ kuvert does not store key passphrases itself, ever.
+ kuvert works as a wrapper around your MTA but can be 
+ fed mails via SMTP, too.
