@@ -19,7 +19,6 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-#   $Id: kuvert,v 2.32 2014/07/15 10:55:55 az Exp az $
 #--
 
 use strict;

@@ -1,5 +1,4 @@
 /*
- * $Id: kuvert_submit.c,v 2.0 2008/06/01 05:15:35 az Exp az $
  * 
  * this file is part of kuvert, a wrapper around your mta that
  * does pgp/gpg signing/signing+encrypting transparently, based
