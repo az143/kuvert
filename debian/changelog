@@ -1,0 +1,316 @@
+kuvert (2.0.12) unstable; urgency=low
+
+  * fixed hardcoded micalg mime header component (closes: #754820)
+  * added small cosmetic header improvements (closes: #754821)
+  * reworded manual entry for can-detach for better clarity (closes: #754823)
+  * updated build script for better policy compliance
+ 
+ -- Alexander Zangerl <az@debian.org>  Tue, 15 Jul 2014 20:22:34 +1000
+
+kuvert (2.0.11) unstable; urgency=low
+
+  * fixed clash between my lazy logfile handling
+    and perl 5.18's increased fastidiousness (closes: #736978)
+
+ -- Alexander Zangerl <az@debian.org>  Wed, 29 Jan 2014 21:36:37 +1000
+
+kuvert (2.0.10) unstable; urgency=medium
+
+  * fixed one-character typo in control that marked dependency as
+    optional (closes: #736774)
+  
+ -- Alexander Zangerl <az@debian.org>  Mon, 27 Jan 2014 11:44:35 +1000
+
+kuvert (2.0.9) unstable; urgency=low
+
+  * now supports STARTTLS for outbound SMTP submission
+  * lifted standards version, adjusted dependencies accordingly
+  
+
+ -- Alexander Zangerl <az@debian.org>  Mon, 25 Nov 2013 20:44:19 +1000
+
+kuvert (2.0.8) unstable; urgency=low
+
+  * modified rules to support hardening build flags
+
+ -- Alexander Zangerl <az@debian.org>  Tue, 24 Sep 2013 13:32:35 +1000
+
+kuvert (2.0.7) unstable; urgency=low
+
+  * added timeout for gpg invocations
+
+ -- Alexander Zangerl <az@debian.org>  Tue, 04 Sep 2012 20:28:39 +1000
+
+kuvert (2.0.6) unstable; urgency=low
+
+  * updated standards version
+  * cleaned up dependencies (closes: #665044)
+
+ -- Alexander Zangerl <az@debian.org>  Thu, 22 Mar 2012 22:09:12 +1000
+
+kuvert (2.0.5) unstable; urgency=low
+
+  * added option to control whether the explanatory mime
+    preamble is generated or not.
+
+ -- Alexander Zangerl <az@debian.org>  Tue, 21 Feb 2012 11:44:03 +1000
+
+kuvert (2.0.4) unstable; urgency=low
+
+  * lifted standards version
+  * added support for optional smtp authentication (for outbound mail)
+    this requires authen::sasl which was added to the dependencies.
+
+ -- Alexander Zangerl <az@debian.org>  Thu, 16 Sep 2010 15:14:10 +1000
+
+kuvert (2.0.3) unstable; urgency=low
+
+  * fixed silly case-sensitivity bug: keys were downcased, but not email 
+    addresses, which may have caused kuvert to fall back to signing 
+    instead of encrypting. 
+  * lifted standards version
+
+ -- Alexander Zangerl <az@debian.org>  Tue, 20 Oct 2009 16:45:33 +1000
+
+kuvert (2.0.2) unstable; urgency=low
+
+  * modified kuvert_submit to honour the -bv option by running
+    sendmail directly instead of enqueueing an email.
+
+ -- Alexander Zangerl <az@debian.org>  Mon, 16 Mar 2009 17:01:24 +1000
+
+kuvert (2.0.1) unstable; urgency=low
+
+  * fixed generation of default queue/tempdirs
+
+ -- Alexander Zangerl <az@debian.org>  Sun, 31 Aug 2008 16:39:52 +1000
+
+kuvert (2.0.0) unstable; urgency=low
+
+  * the next generation of kuvert: better SMTP support, no more pgp2,
+    more precise control over keys, gpg agent support etc.
+  * updated dependencies
+  * updated standards version
+
+ -- Alexander Zangerl <az@debian.org>  Sun, 29 Jun 2008 21:25:51 +1000
+
+kuvert (1.1.14) unstable; urgency=low
+
+  * don't strip kuvert_mta_wrapper if DEB_BUILD_OPTIONS asks for that 
+    (closes: #437288)
+
+ -- Alexander Zangerl <az@debian.org>  Sun, 12 Aug 2007 13:24:20 +1000
+
+kuvert (1.1.13) unstable; urgency=high
+
+  * fixed stupid mistake wrt. variable init in kuvert_mta_wrapper
+    which caused the wrapper to fall back to sendmail most of the time.
+
+ -- Alexander Zangerl <az@debian.org>  Sat, 23 Jun 2007 13:16:42 +1000
+
+kuvert (1.1.12) unstable; urgency=low
+
+  * the signature MIME-part is now tagged a bit more extensively
+    (as per hint from Andreas Labres/Andreas Kreuzinger)
+
+ -- Alexander Zangerl <az@debian.org>  Sat, 23 Jun 2007 12:39:05 +1000
+
+kuvert (1.1.11) unstable; urgency=low
+
+  * lifted standards version
+
+ -- Alexander Zangerl <az@debian.org>  Tue, 10 Apr 2007 18:24:40 +1000
+
+kuvert (1.1.10) unstable; urgency=low
+
+  * added libproc-pid-file-perl dependency
+  * deprecated AGENTPATH/CLIENTPATH configuration setting
+    and cleaned up secret on demand stuff
+  * lifted standards version
+  
+ -- Alexander Zangerl <az@debian.org>  Fri,  4 Nov 2005 16:20:20 +1000
+
+kuvert (1.1.9) unstable; urgency=high
+
+  * the "don't trust input. do be conservative and paranoid." release.
+  fixed a potential security problem re email addresses that are
+  borderline rfc2822-compliant by calling the mta without shell interference.
+  * updated homepage url
+
+ -- Alexander Zangerl <az@debian.org>  Sat, 26 Feb 2005 08:11:26 +1000
+
+kuvert (1.1.8) unstable; urgency=low
+
+  * lifted standards version
+  * added homepage to description
+
+ -- Alexander Zangerl <az@debian.org>  Thu, 11 Dec 2003 12:52:40 +1000
+
+kuvert (1.1.7) unstable; urgency=low
+
+  * added example ~/.kuvert
+  * kuvert now produces a blank ~/.kuvert if none is found on startup
+
+ -- Alexander Zangerl <az@debian.org>  Sun,  3 Aug 2003 11:53:19 +1000
+
+kuvert (1.1.6) unstable; urgency=high
+
+  * fixed bad problem with mixture of raw and signed/encr'd mails:
+  the raw mail would lose most of its headers due to an overzealous
+  "code improvement". problem was only present with multi-recipient mails.
+
+ -- Alexander Zangerl <az@debian.org>  Wed, 11 Jun 2003 19:45:51 +1000
+
+kuvert (1.1.5) unstable; urgency=low
+
+  * fixed variable length macro (problem only with gcc 3.3) (closes: #194944)
+  * bumped standards version
+
+ -- Alexander Zangerl <az@debian.org>  Wed, 28 May 2003 20:12:44 +1000
+
+kuvert (1.1.4) unstable; urgency=low
+
+  * bumped standards version, now only suggests old-style pgp
+  * fixed error behaviour (sent multiple error messages with -b)
+
+ -- Alexander Zangerl <az@debian.org>  Fri, 25 Apr 2003 17:34:18 +1000
+
+kuvert (1.1.3) unstable; urgency=low
+
+  * standards version lifted, debhelper cleanup
+
+ -- Alexander Zangerl <az@debian.org>  Sun,  9 Mar 2003 11:23:30 +1000
+
+kuvert (1.1.2) unstable; urgency=low
+
+  * added IDENTIFY directive: adds an X-Mailer header (closes: Bug#181868)
+
+ -- Alexander Zangerl <az@debian.org>  Sat, 22 Feb 2003 14:58:52 +1000
+
+kuvert (1.1.1) unstable; urgency=low
+
+  * fixed problem with duplicate entries in pidfile on unclean shutdown.
+  * pidfile honors $TMPDIR now.
+  * added option "-b": sends barfmail when fatal error encountered (closes: Bug179345)
+
+ -- Alexander Zangerl <az@debian.org>  Sun, 16 Feb 2003 23:44:15 +1000
+
+kuvert (1.1.0) unstable; urgency=low
+
+  * complete overhaul of the code, streamlined, better error handling
+  * added new dependency on libterm-readkey-perl
+  * fixed handling of idea-extension (closes: Bug#162279)
+  * added Bcc handling (closes: Bug#162024) 
+  * removed /usr/doc transition stuff
+  * fallback option now falls back down to std key if no ng private key av.
+
+ -- Alexander Zangerl <az@debian.org>  Tue, 21 Jan 2003 22:33:16 +1000
+
+kuvert (1.0.13) unstable; urgency=low
+
+  * default tempdir now honors $TMPDIR (closes: Bug#161326)
+  * does not start anymore without config file (closes: Bug#161327)
+  * some new sanity checks and clarifications in the manpages and README
+  * added option MTA
+  * SECRETONDEMAND option extended and clarified
+
+ -- Alexander Zangerl <az@debian.org>  Thu, 19 Sep 2002 18:04:18 +0200
+
+kuvert (1.0.12) unstable; urgency=high
+
+  * finally fixed typo trashing the handling of the 'fallback' action
+
+ -- Alexander Zangerl <az@debian.org>  Sun, 28 Apr 2002 01:50:15 +1000
+
+kuvert (1.0.11) unstable; urgency=high
+
+  * fixed typo that trashed handling of -force
+
+ -- Alexander Zangerl <az@debian.org>  Fri, 26 Apr 2002 12:11:54 +1000
+
+kuvert (1.0.10) unstable; urgency=medium
+
+  * manpage improvements
+  * -force handling fixed (did not work as DEFAULT action)
+  * -force semantics finetuned: action=none is not overrideable by -force
+  or the override header
+
+ -- Alexander Zangerl <az@debian.org>  Fri, 26 Apr 2002 00:43:03 +1000
+
+kuvert (1.0.9) unstable; urgency=low
+
+  * moved into main/mail as per recent announcement
+
+ -- Alexander Zangerl <az@debian.org>  Sun, 24 Mar 2002 17:20:40 +1000
+
+kuvert (1.0.8) unstable; urgency=low
+
+  * changed mail addressing in send_bounce: no angle brackets.
+  note: this does not fulfil rfc2822, 3.4.1, but as this is local mail it does
+  not really concern me.  (closes: Bug#136619)
+
+ -- Alexander Zangerl <az@debian.org>  Tue,  5 Mar 2002 23:19:00 +1000
+
+kuvert (1.0.7) unstable; urgency=low
+
+  * fixed dependency mailtools -> libmailtools-perl
+  * fixed version-number generation
+
+ -- Alexander Zangerl <az@debian.org>  Sat, 16 Feb 2002 21:06:52 +1000
+
+kuvert (1.0.6) unstable; urgency=low
+
+  * gpg-idea has been removed due to patent problems (#126506),
+    removing suggestion
+
+ -- Alexander Zangerl <az@debian.org>  Thu, 31 Jan 2002 20:46:13 +1000
+
+kuvert (1.0.5) unstable; urgency=low
+
+  * added config of queue check interval
+  * added -v version command, added version logging at start
+
+ -- Alexander Zangerl <az@debian.org>  Thu, 31 Jan 2002 00:24:56 +1000
+
+kuvert (1.0.4) unstable; urgency=low
+
+  * fixed bug: handling of no-std-pgp works now
+
+ -- Alexander Zangerl <az@snafu.priv.at>  Sun, 27 Jan 2002 22:32:42 +1000
+
+kuvert (1.0.3) unstable; urgency=low
+
+  * added nofork option (-n)
+  * fixed behaviour in debugging mode
+  * improved manpage
+  * improved handling of expired, revoked, invalid keys
+  * added -force actions
+
+ -- Alexander Zangerl <az@snafu.priv.at>  Wed,  2 Jan 2002 16:43:30 +1000
+
+kuvert (1.0.2) unstable; urgency=low
+
+  * fixed tempdir and queuedir generation for default dirs
+  * fixed handling of setups with pgp XOR gpg
+  * changed sendmail error mode to -oem (mailback, but with return code)
+  * some manpage clarifications
+  * fixed reporting for garbled mails
+  * added logging to file
+
+ -- Alexander Zangerl <az@snafu.priv.at>  Sun, 11 Nov 2001 19:24:05 +1000
+
+kuvert (1.0.1) unstable; urgency=low
+
+  * fixed problems with missing .kuvert config file.
+  * added more options for sendmail to be recognized (-oi,-od*,-oe*)
+
+ -- Alexander Zangerl <az@snafu.priv.at>  Tue,  6 Nov 2001 23:23:39 +1000
+
+kuvert (1.0.0) unstable; urgency=low
+
+  * Initial Release.
+  * Renamed from 'guard' to 'kuvert', debianized.
+
+ -- Alexander Zangerl <az@snafu.priv.at>  Sun, 21 Oct 2001 23:21:16 +1000
+
+
