@@ -289,11 +289,18 @@ sub sign_send
     # generate the signature, repeat until proper passphrase given
     # or until gpg gives up with a different error indication
     my @res;
+    my $backoff = 0;
     while (1)
     {
 	@res=&sign_encrypt($signkey,$dumpfile,$output,());
 	last if ($res[0]!=1);	#  no error or fatal error
 	dlogit("gpg reported bad passphrase, retrying.");
+	if ($config{"query-secret"})
+	{
+	    # be polite to the query tool and back off up to 8 sec
+	    sleep($backoff);
+	    $backoff += 2  if ($backoff < 8);
+	}
 	if (!$config{"use-agent"} && $config{"flush-secret"} && $signkey)
 	{
 	    dlogit("invalidating passphrase for $signkey");
@@ -351,11 +358,18 @@ sub crypt_send
 
     # generate the encrypted data, repeat until proper passphrase given
     my @res;
+    my $backoff = 0;
     while (1)
     {
 	@res=&sign_encrypt($signkey,$dumpfile,$output,@{$rec_keys});
 	last if ($res[0]!=1);	#  no error or fatal error
 	dlogit("gpg reported bad passphrase, retrying.");
+	if ($config{"query-secret"})
+	{
+	    # be polite to the query tool and back off up to 8 sec
+	    sleep($backoff);
+	    $backoff += 2  if ($backoff < 8);
+	}
 	if (!$config{"use-agent"} && $config{"flush-secret"} && $signkey)
 	{
 	    dlogit("invalidating passphrase for $signkey");
