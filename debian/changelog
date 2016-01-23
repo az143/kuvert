@@ -1,3 +1,11 @@
+kuvert (2.0.13) unstable; urgency=low
+
+  * kuvert now backs off for up to 8 seconds when re-requesting an
+	  invalid password from an external program
+  * lifted standards version
+
+ -- Alexander Zangerl <az@debian.org>  Sat, 23 Jan 2016 17:35:52 +1000
+
 kuvert (2.0.12) unstable; urgency=low
 
   * fixed hardcoded micalg mime header component (closes: #754820)
