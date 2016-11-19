@@ -1257,7 +1257,7 @@ sub sign_encrypt
 	{
 	    if ($l=~/^\[GNUPG:\] NEED_PASSPHRASE ([a-fA-F0-9]+) ([a-fA-F0-9]+) \d+ \d+$/)   
 	    {
-		$precmd=sprintf($config{"query-secret"},"0x".substr($2,8));
+		$precmd=sprintf($config{"query-secret"},"0x$2");
 		push @cmd,"--passphrase-fd",0;
 		last;
 	    }
