@@ -3,7 +3,7 @@ Section: mail
 Priority: extra
 Maintainer: Alexander Zangerl <az@debian.org>
 Build-Depends: debhelper (>= 8), dpkg-dev (>= 1.16.1~)
-Standards-Version: 3.9.6
+Standards-Version: 3.9.8
 
 Package: kuvert
 Architecture: any

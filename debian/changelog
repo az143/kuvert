@@ -1,3 +1,10 @@
+kuvert (2.0.14) unstable; urgency=low
+
+  * use full 16 digit key id when interacting with external passhrase cache
+  * lifted standards version
+
+ -- Alexander Zangerl <az@debian.org>  Fri, 24 Mar 2017 19:27:41 +1000
+
 kuvert (2.0.13) unstable; urgency=low
 
   * kuvert now backs off for up to 8 seconds when re-requesting an
