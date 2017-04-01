@@ -33,9 +33,12 @@ use Net::Server::Mail::ESMTP;	# for receiving via smtp
 use IO::Socket::INET;		# ditto
 use FileHandle;
 use File::Slurp;
+use File::Find;
 use File::Temp qw(:mktemp);
-use Fcntl qw(:flock);
 use Time::HiRes;
+use Proc::ProcessTable;
+use Encode;
+use POSIX qw();
 
 # some global stuff
 # the version number is inserted by make install
@@ -52,16 +55,6 @@ my $rcfile="$home/.kuvert";
 
 my $timeout=600;		# seconds to wait for gpg
 
-# from rfc4880, section 9.4. required for multipart/signed
-# to translate gpg's numeric status output into names that
-# rfc3156 likes
-my %hashalgos = (1 => "pgp-md5",
-		 2 => "pgp-sha1",
-		 3 => "pgp-ripemd160",
-		 8 => "pgp-sha256",
-		 9 => "pgp-sha384",
-		 10 => "pgp-sha512",
-		 11 => "pgp-sha224");
 
 # configuration directives
 my (%config,$debug,%email2key);
@@ -69,7 +62,7 @@ my (%config,$debug,%email2key);
 my %options;
 if (!getopts("dork",\%options) || @ARGV)
 {
-    die "usage: $progname [-d] [-o] [-r|-k]
+	die "usage: $progname [-d] [-o] [-r|-k]
 -k: kill running $progname daemon
 -d: debug mode
 -r: reload keyrings and configfile
@@ -78,89 +71,61 @@ This is: $progname $version.\n";
 }
 $debug=$options{"d"};
 
+die("no configuration file exists. See man $progname(1) for details.\n")
+    if (!-e $rcfile);
+
 # now handle the kill/reload stuff
 my $piddir=($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp");
 my $pidname="$progname.$<";
-
-# kill a already running process
-# TERM for kill or HUP for rereading
 my $pidf="$piddir/$pidname.pid";
+
+# who's there?
+my %instances;
+if (-f $pidf && (my $knownpids = read_file($pidf)))
+{
+	my $proctable = Proc::ProcessTable->new->table;
+
+	$knownpids =~ s/\D+/ /g;
+	for my $maybe (split(/\s/, $knownpids))
+	{
+		next if ($maybe == $$);			# not likely, but...
+
+		# really mine?
+		my ($ptentry) = grep($_->pid eq $maybe, @$proctable);
+		if ($ptentry && $ptentry->cmndline =~ /^$progname/
+				&& $ptentry->uid == $<)
+		{
+			$instances{$maybe} = $ptentry->cmndline;
+		}
+	}
+}
+
 if ($options{"k"} || $options{"r"})
 {
-    my $sig=($options{"r"}?'USR1':'TERM');
-    my $ssig='TERM';		# the smtp listener must die
-    my $pidf="$piddir/$pidname.pid";
+	my $sig=($options{"r"}?'USR1':'TERM'); # -r reload, -k kill
+	my $ssig='TERM';		# the smtp listener must always die
 
-    die("no pid file found, can't signal any $progname\n")
-	if (!-r $pidf);
-    my @pids=read_file($pidf);
-    for my $p (@pids)
-    {
-	chomp $p;
-	$p=~s/[^0-9]//g;	# only numbers
-	# fixme: this is linux-centric, should be replaced 
-	# with proc::processtable
-	my $fn="/proc/$p/cmdline";
-	if (-r $fn && (my $n=read_file($fn))=~/^$progname/)
+	for my $mine (keys %instances)
 	{
-	    my $s=($n=~/^$listenername/?$ssig:$sig);
-	    dlogit("sending sig $s to $p");
-	    logit("can't send signal to process $p: $!\n")
-		if (!kill($s,$p));
+		my $signal = ($instances{$mine} =~ /^$listenername/? $ssig:$sig);
+		dlogit("sending sig $signal to $mine ($instances{$mine})");
+		logit("can't send signal to process $mine: $!\n")
+				if (!kill($signal,$mine));
 	}
-    }
-    unlink($pidf) if ($options{k}); # remove the pidfile on kills
-    exit 0;
+	unlink($pidf) if ($options{k}); # remove the pidfile on kills
+	exit 0;
 }
-chdir("/");
 
-# now do the pidfile checking dance
-if (-f "$pidf")                     
-{
-    open(PIDF,"+<$pidf") || &die("can't rw-open $pidf: $!\n");
-}
-else
-{
-    open(PIDF,">$pidf") || &die("can't w-open $pidf: $!\n");
-}
-die("can't lock $pidf: $!\n") if (!flock(PIDF,LOCK_NB|LOCK_EX));
-my @others=<PIDF>;
-my @badones;
-for my $p (@others)
-{
-    chomp $p;
-    $p=~s/[^0-9]//g;	# only numbers
-    # fixme: this is linux-centric, should be replaced 
-    # with proc::processtable
-    if (-r "/proc/$p/cmdline" 
-	&& (my $n=read_file("/proc/$p/cmdline"))=~/^$progname/)
-    {
-	push @badones,$p;
-    }
-}
-die("other instance(s) with pids ".join(", ",@badones)." are running\n")
-    if (@badones);
-# rewind to ready it for writing
-seek(PIDF,0,'SEEK_SET');
+# anybody in the way?
+die("other instance(s) with pids ".join(", ",keys %instances)
+		." are running!\n")
+    if (keys %instances);
 
-die("no configuration file exists. See $progname(1) for details.\n")
-    if (!-e $rcfile);
-
-dlogit("reading config file");
 # read in the config, setup dirs, logging, defaultkey etc.
 %config=&read_config;
+dlogit("reading config file");
 # log startup after config is read and logging prefs are known
 logit("$progname version $version starting");
-
-# fire up smtp server, iff not oneshot
-if (!$options{o} && 
-    $config{"ma-user"} && $config{"ma-pass"} && $config{"maport"})
-{
-    # fork off the smtp-to-queue daemon
-    my $pid=&start_mailserver;
-    # we, parent, update the pidfile with mailserver pid
-    print PIDF "$pid\n";
-}
 
 # install the handlers for conf reread
 $SIG{'USR1'}=\&handle_reload;
@@ -169,28 +134,39 @@ map { $SIG{$_}=\&handle_term; } qw(HUP INT QUIT TERM);
 
 if (!$options{o} && $config{"can-detach"})
 {
-    my $pid=fork;
-    if (!defined $pid)
-    {
-	&bailout("fork failed: $!");
-    }
-    elsif ($pid)
-    {
-	exit 0;			# parent is done
-    }
+	my $pid=fork;
+	if (!defined $pid)
+	{
+		&bailout("fork failed: $!");
+	}
+	elsif ($pid)
+	{
+		exit 0;			# parent is done
+	}
+	chdir("/");
+	POSIX::setsid();
 }
-print PIDF "$$\n";
-close PIDF;			# clears the lock
 
-# make things clean and ready. we're in sole command now.
-cleanup($config{tempdir},0);
+# fire up smtp server, iff not oneshot
+if (!$options{o} &&
+    $config{"ma-user"} && $config{"ma-pass"} && $config{"maport"})
+{
+	# fork off the smtp-to-queue daemon
+	my $pid = &start_mailserver;
+	$instances{$pid} = 1;
+}
+
+# now we're daemon or sole process
+write_file($pidf, join("\n", keys %instances, $$));
+cleanup($config{tempdir},0);		# bsts
+
 %email2key=&read_keyring;
 
-# let's use one parser object only;
-my $parser = MIME::Parser->new() 
+# let's (re)use just one parser object
+my $parser = MIME::Parser->new()
     || bailout("can't create mime parser object: $!");
 
-# dump mime object to tempdir
+# dump mime objects to tempdir - reset on reload signal
 $parser->output_dir($config{tempdir});
 # retain rfc1522-encoded headers, please
 $parser->decode_headers(0);
@@ -200,59 +176,58 @@ $parser->filer->ignore_filename(1);
 # the main loop, left only via signal handler handle_term
 while (1)
 {
-    &bailout("cant open $config{queuedir}: $!")
-	if (!opendir(D,"$config{queuedir}"));
-	
-    my $file;
-    foreach $file (sort grep(/^\d+$/,readdir(D)))
-    {
-	if (!open(FH,"$config{queuedir}/$file"))
+	&bailout("cant open $config{queuedir}: $!")
+			if (!opendir(D,"$config{queuedir}"));
+
+	my $file;
+	foreach $file (sort grep(/^\d+$/,readdir(D)))
 	{
+		if (!open(FH,"$config{queuedir}/$file"))
+		{
 	    logit("huh? $file suddenly disappeared? $!");
 	    next;
-	}
-	# lock it if possible
-	if (!flock(FH,LOCK_NB|LOCK_EX))
-	{
+		}
+		# lock it if possible
+		if (!flock(FH,LOCK_NB|LOCK_EX))
+		{
 	    close(FH);
 	    logit("$file is locked, skipping.");
 	    next;
-	}
+		}
 
-	#ok, open & locked, let's proceed
-	logit("processing $file for $username");
+		#ok, open & locked, let's proceed
+		logit("processing $file for $username");
 
-	my @res=process_file(*FH,"$config{queuedir}/$file");
-	if (@res)
-	{
+		my @res=process_file(*FH,"$config{queuedir}/$file");
+		if (@res)
+		{
 	    rename("$config{queuedir}/$file","$config{queuedir}/.$file")
-		|| &bailout("cant rename $config{queuedir}/$file: $!");
-	    alert("Problem with $config{queuedir}/$file",
-"Your mail \"$config{queuedir}/$file\" could not be processed and 
-$progname has given up on it.
+					|| &bailout("cant rename $config{queuedir}/$file: $!");
+	    alert($res[0],
+						"Your mail \"$config{queuedir}/$file\" could not be processed and $progname has given up on it.
 Please review the following error details to determine what went wrong:\n\n",
-@res,
-"\n$progname has renamed the problematic mail to \"$config{queuedir}/.$file\";
-if you want $progname to retry, rename it to an all-numeric filename. Otherwise you should delete the file.\n
-Please note that processing may have worked for SOME recipients already!\n");
-	}
-	else
-	{
+						@res,
+						"\n$progname has renamed the problematic mail to \"$config{queuedir}/.$file\";
+if you want $progname to retry, rename it to an all-numeric filename. Otherwise you should delete the file.\n");
+		}
+		else
+		{
 	    logit("done handling file $file");
 	    unlink("$config{queuedir}/$file")
-		|| &bailout("cant unlink $config{queuedir}/$file: $!");
-	}
-	# and clean up the cruft left behind, please!
-	cleanup("$config{tempdir}",0);
+					|| &bailout("cant unlink $config{queuedir}/$file: $!");
+		}
+		# and clean up the cruft left behind, please!
+		cleanup("$config{tempdir}",0);
 
-	# unlock the file
-	bailout("problem closing $config{queuedir}/$file: $!")
-	    if (!close(FH));
-    }
-    closedir(D);
-    &handle_term("oneshot mode") if ($options{o});
-    sleep($config{interval});
+		# close and thus unlock the file
+		bailout("problem closing $config{queuedir}/$file: $!")
+				if (!close(FH));
+	}
+	closedir(D);
+	&handle_term("oneshot mode") if ($options{o});
+	sleep($config{interval});
 }
+exit(1);												# shouldn't reach here
 
 
 # sign an entity and send the resulting email to the listed recipients
@@ -261,414 +236,434 @@ Please note that processing may have worked for SOME recipients already!\n");
 # returns nothing if fine, @error msgs otherwise
 sub sign_send
 {
-    my ($ent,$dumpfile,$header,$from,$signkey,@recips)=@_;
-    my $output=mktemp($config{tempdir}."/cryptoout.XXXX");
+	my ($ent,$dumpfile,$header,$from,$signkey,@recips)=@_;
+	my $output=mktemp($config{tempdir}."/cryptoout.XXXX");
 
-    # generate a new top-entity to be mailed
-    my $newent=new MIME::Entity;
-    # make a private copy of the main header and set this one
-    $newent->head($header->dup);
-    # make it a multipart/signed
-    # and set the needed content-type-fields on this top entity
-    $newent->head->mime_attr("MIME-Version"=>"1.0");
-    $newent->head->mime_attr("Content-Type"=>"multipart/signed");
-    $newent->head->mime_attr("Content-Type.Boundary"=>
-			     &MIME::Entity::make_boundary);
-    $newent->head->mime_attr("Content-Type.Protocol"=>
-			     "application/pgp-signature");
+	# generate a new top-entity to be mailed
+	my $newent=new MIME::Entity;
+	# make a private copy of the main header and set this one
+	$newent->head($header->dup);
+	# make it a multipart/signed
+	# and set the needed content-type-fields on this top entity
+	$newent->head->mime_attr("MIME-Version"=>"1.0");
+	$newent->head->mime_attr("Content-Type"=>"multipart/signed");
+	$newent->head->mime_attr("Content-Type.Boundary"=>
+													 &MIME::Entity::make_boundary);
+	$newent->head->mime_attr("Content-Type.Protocol"=>
+													 "application/pgp-signature");
 
-    # set/suppress the preamble
-    $newent->preamble($config{"preamble"}?
-		      ["This is a multi-part message in MIME format.\n",
-		       "It has been signed conforming to RFC3156.\n",
-		       "You need GPG to check the signature.\n"]:[]);
-	
-    # add the passed entity as part
-    $newent->add_part($ent);
+	# set/suppress the preamble
+	$newent->preamble($config{"preamble"}?
+										["This is a multi-part message in MIME format.\n",
+										 "It has been signed conforming to RFC3156.\n",
+										 "You need GPG to check the signature.\n"]:[]);
 
-    # generate the signature, repeat until proper passphrase given
-    # or until gpg gives up with a different error indication
-    my @res;
-    my $backoff = 0;
-    while (1)
-    {
-	@res=&sign_encrypt($signkey,$dumpfile,$output,());
-	last if ($res[0]!=1);	#  no error or fatal error
-	dlogit("gpg reported bad passphrase, retrying.");
-	if ($config{"query-secret"})
+	# add the passed entity as part
+	$newent->add_part($ent);
+
+	# generate the signature, repeat until proper passphrase given
+	# or until gpg gives up with a different error indication
+	my @res;
+	my $backoff = 0;
+	while (1)
 	{
+		@res=&sign_encrypt($signkey,$dumpfile,$output,());
+		last if ($res[0]!=1);	#  no error or fatal error
+		dlogit("gpg reported bad passphrase, retrying.");
+		if ($config{"query-secret"})
+		{
 	    # be polite to the query tool and back off up to 8 sec
 	    sleep($backoff);
 	    $backoff += 2  if ($backoff < 8);
-	}
-	if (!$config{"use-agent"} && $config{"flush-secret"} && $signkey)
-	{
+		}
+		if (!$config{"use-agent"} && $config{"flush-secret"} && $signkey)
+		{
 	    dlogit("invalidating passphrase for $signkey");
 	    my $cmd=sprintf($config{"flush-secret"},$signkey);
 	    system($cmd);	# ignore the flushing result; best effort only
+		}
 	}
-    }
-    my $hashname = $res[1];
-    return @res[1..$#res] if ($res[0]); # fatal error: give up
+	my $hashname = $res[1];
+	return @res[1..$#res] if ($res[0]); # fatal error: give up
 
-    $newent->head->mime_attr("Content-Type.Micalg"=>$hashname);
+	$newent->head->mime_attr("Content-Type.Micalg"=>$hashname);
 
-    # attach the signature
-    $newent->attach(Type => "application/pgp-signature",
-		    Path => $output,
-		    Filename => "signature.asc",
-		    Disposition => "inline",
-		    Description=> "Digital Signature",
-		    Encoding => "7bit");
-    # and send the resulting thing, not cleaning up
-    return &send_entity($newent,$from,@recips);
+	# attach the signature
+	$newent->attach(Type => "application/pgp-signature",
+									Path => $output,
+									Filename => "signature.asc",
+									Disposition => "inline",
+									Description=> "Digital Signature",
+									Encoding => "7bit");
+	# and send the resulting thing, not cleaning up
+	return &send_entity($newent,$from,@recips);
 }
 
 # encrypt and sign an entity, send the resulting email to the listed recipients
-# args: entity, location of dump of entity, outermost headers, 
+# args: entity, location of dump of entity, outermost headers,
 # envelope from address, recipient keys arrayref, recipient addresses
 # returns nothing if fine, @error msgs otherwise
 sub crypt_send
 {
-    my ($ent,$dumpfile,$header,$from,$signkey,$rec_keys,@recips)=@_;
-    my $output=mktemp($config{tempdir}."/cryptoout.XXXX");
+	my ($ent,$dumpfile,$header,$from,$signkey,$rec_keys,@recips)=@_;
+	my $output=mktemp($config{tempdir}."/cryptoout.XXXX");
 
-    # generate a new top-entity to be mailed
-    my $newent=new MIME::Entity;
-    # make a private copy of the main header and set this one
-    $newent->head($header->dup);
-    # make it a multipart/encrypted
-    # and set the needed content-type-fields on this top entity
-    $newent->head->mime_attr("MIME-Version"=>"1.0");
-    $newent->head->mime_attr("Content-Type"=>"multipart/encrypted");
-    $newent->head->mime_attr("Content-Type.Boundary"=>
-			     &MIME::Entity::make_boundary);
-    $newent->head->mime_attr("Content-Type.Protocol"=>
-			     "application/pgp-encrypted");
-    # set/suppress the new preamble
-    $newent->preamble($config{"preamble"}?
-		      ["This is a multi-part message in MIME format.\n",
-		       "It has been encrypted conforming to RFC3156.\n",
-		       "You need GPG to view the content.\n"]:[]);
-    
-    # attach the needed dummy-part
-    $newent->attach(Type=>"application/pgp-encrypted",
-		    Data=>"Version: 1\n",
-		    Encoding=>"7bit");
+	# generate a new top-entity to be mailed
+	my $newent=new MIME::Entity;
+	# make a private copy of the main header and set this one
+	$newent->head($header->dup);
+	# make it a multipart/encrypted
+	# and set the needed content-type-fields on this top entity
+	$newent->head->mime_attr("MIME-Version"=>"1.0");
+	$newent->head->mime_attr("Content-Type"=>"multipart/encrypted");
+	$newent->head->mime_attr("Content-Type.Boundary"=>
+													 &MIME::Entity::make_boundary);
+	$newent->head->mime_attr("Content-Type.Protocol"=>
+													 "application/pgp-encrypted");
+	# set/suppress the new preamble
+	$newent->preamble($config{"preamble"}?
+										["This is a multi-part message in MIME format.\n",
+										 "It has been encrypted conforming to RFC3156.\n",
+										 "You need GPG to view the content.\n"]:[]);
 
-    # generate the encrypted data, repeat until proper passphrase given
-    my @res;
-    my $backoff = 0;
-    while (1)
-    {
-	@res=&sign_encrypt($signkey,$dumpfile,$output,@{$rec_keys});
-	last if ($res[0]!=1);	#  no error or fatal error
-	dlogit("gpg reported bad passphrase, retrying.");
-	if ($config{"query-secret"})
+	# attach the needed dummy-part
+	$newent->attach(Type=>"application/pgp-encrypted",
+									Data=>"Version: 1\n",
+									Encoding=>"7bit");
+
+	# generate the encrypted data, repeat until proper passphrase given
+	my @res;
+	my $backoff = 0;
+	while (1)
 	{
+		@res=&sign_encrypt($signkey,$dumpfile,$output,@{$rec_keys});
+		last if ($res[0]!=1);	#  no error or fatal error
+		dlogit("gpg reported bad passphrase, retrying.");
+		if ($config{"query-secret"})
+		{
 	    # be polite to the query tool and back off up to 8 sec
 	    sleep($backoff);
 	    $backoff += 2  if ($backoff < 8);
-	}
-	if (!$config{"use-agent"} && $config{"flush-secret"} && $signkey)
-	{
+		}
+		if (!$config{"use-agent"} && $config{"flush-secret"} && $signkey)
+		{
 	    dlogit("invalidating passphrase for $signkey");
 	    my $cmd=sprintf($config{"flush-secret"},$signkey);
 	    system($cmd);	# ignore the flushing result; best effort only
+		}
 	}
-    }
-    return @res[1..$#res] if ($res[0]); # fatal error: give up
-    
-    # attach the encrypted data
-    $newent->attach(Type => "application/octet-stream",
-		    Path => $output,
-		    Filename => undef,
-		    Disposition => "inline",
-		    Encoding=>"7bit");
+	return @res[1..$#res] if ($res[0]); # fatal error: give up
 
-    # and send the resulting thing
-    return &send_entity($newent,$from,@recips);
+	# attach the encrypted data
+	$newent->attach(Type => "application/octet-stream",
+									Path => $output,
+									Filename => undef,
+									Disposition => "inline",
+									Encoding=>"7bit");
+
+	# and send the resulting thing
+	return &send_entity($newent,$from,@recips);
 }
 
-# processes a file in the queue, 
+# processes a file in the queue,
 # leaves the file in the queue
-# returns nothing if ok or @error msgs
+# returns nothing if ok or @error msgs - first one short enough for subject
 sub process_file
 {
-    my ($fh,$file)=@_;
+	my ($fh,$file)=@_;
 
-    my $in_ent;
-    eval { $in_ent=$parser->parse(\$fh); };
-    return ("parsing $file failed","parser errors: $@",$parser->last_error)
-	if ($@);
+	my $in_ent;
+	eval { $in_ent=$parser->parse(\$fh); };
+	return ("Parsing of $file failed!","parser errors: $@",$parser->last_error)
+			if ($@);
 
-    # extract and clean envelope x-kuvert-from and -to
-    my @erecips=extract_addresses($in_ent->head->get("x-kuvert-to"));
-    my @efrom=extract_addresses($in_ent->head->get("x-kuvert-from"));
-    $in_ent->head->delete("x-kuvert-to");
-    $in_ent->head->delete("x-kuvert-from");
-    
-    # extract the from
-    my @froms=extract_addresses($in_ent->head->get("from"));
-    return "could not parse From: header!" if (!@froms);
+	# extract and clean envelope x-kuvert-from and -to
+	my @erecips=extract_addresses($in_ent->head->get("x-kuvert-to"));
+	my @efrom=extract_addresses($in_ent->head->get("x-kuvert-from"));
+	$in_ent->head->delete("x-kuvert-to");
+	$in_ent->head->delete("x-kuvert-from");
 
-    # envelope from is: x-kuvert-from if present or from
-    my $fromaddr=@efrom?$efrom[0]->[0]:$froms[0]->[3]; 
-   
-    my $signkey=$config{defaultkey};
-    # do we have a key override
-    if ($froms[0]->[4]=~/key=([0-9a-fA-FxX]+)/)
-    {
-	$signkey=$1;
-	dlogit("local signkey override: $signkey");
-	$in_ent->head->replace("from",$froms[0]->[3]);
-    }
+	# extract and parse the from
+	# each is addr, phrase, comment, formatted, directive
+	my @froms=extract_addresses($in_ent->head->get("from"));
+	return "Could not parse From: header!" if (!@froms);
 
-    # add version header
-    $in_ent->head->add('X-Mailer',"$progname $version")
-	if ($config{identify});
+	# envelope from is: x-kuvert-from if present or from
+	my $fromaddr=@efrom?$efrom[0]->[0]:$froms[0]->[3];
 
-    # extract and delete blanket instruction header
-    my $override;
-    if (lc($in_ent->head->get("x-kuvert"))=~
-	/^\s*(none|fallback|fallback-all|signonly)\s*$/)
-    {
-	$override=$1;
-    }
-    $in_ent->head->delete("x-kuvert");
-
-    # resend-request-header present and no more specific recipients given? 
-    # then send this as-it-is
-    if (!@erecips && (my $rsto=$in_ent->head->get("resent-to")))
-    {
-	logit("resending requested, doing so.");
-	my @prstos=Mail::Address->parse($rsto);
-	return "could not parse Resent-To: header!"
-	    if (!@prstos);
-	my @rstos=map { $_->address } (@prstos);
-
-	return send_entity($in_ent,$fromaddr,@rstos);
-    }
-
-    # extract and analyze normal and bcc recipients
-    my @tos=extract_addresses($in_ent->head->get("to"));
-    my @ccs=extract_addresses($in_ent->head->get("cc"));
-    my @recips=(@tos,@ccs);
-
-    my @recip_bcc=extract_addresses($in_ent->head->get("bcc"));
-    # and don't leak Bcc...
-    $in_ent->head->delete("bcc");
-    
-    # replace to and cc with cleaned headers: we don't want to
-    # leak directives
-    my $newto=join(", ",map { $_->[3] } (@tos));
-    my $newcc=join(", ",map { $_->[3] } (@ccs));
-    $in_ent->head->replace("To",$newto);
-    $in_ent->head->replace("Cc",$newcc) if ($newcc);
-
-    # cry out loud if there is a problem with the submitted mail 
-    # and no recipients were distinguishable...
-    # happens sometimes, with mbox-style 'From bla' lines in the headers...
-    return("No recipients found!","The mail headers seem to be garbled.")
-	if (!@erecips && !@recips && !@recip_bcc);
-
-    # remember the addresses' nature
-    my (%is_bcc);
-    map { $is_bcc{$_->[0]}=1; } (@recip_bcc);
-    
-    # now deal with envelope-vs-mailheader recipients:
-    # whatever the envelope says, wins.
-    if (@erecips)
-    {
-	# no need to distinguish these otherwise
-	my (%is_normal,%is_envelope);
-	map { $is_normal{$_->[0]}=1; } (@recips);
-	map { $is_envelope{$_->[0]}=1; } (@erecips);
-
-	for my $e (@erecips)
+	my $signkey=$config{defaultkey};
+	# do we have a key override
+	if ($froms[0]->[4]=~/key=((0x)?[0-9a-f]+)/i)
 	{
+		$signkey=$1;
+		dlogit("local signkey override: $signkey");
+		$in_ent->head->replace("from",$froms[0]->[3]);
+	}
+
+	# add version header
+	$in_ent->head->add('X-Mailer',"$progname $version")
+			if ($config{identify});
+
+	# extract and delete blanket instruction header
+	my $override;
+	if (lc($in_ent->head->get("x-kuvert"))=~
+			/^\s*(none|fallback|fallback-all|signonly|mustencrypt)\s*$/)
+	{
+		$override=$1;
+	}
+	$in_ent->head->delete("x-kuvert");
+
+	# resend-request-header present and no more specific recipients given?
+	# then send this as-it-is
+	if (!@erecips && (my $rsto=$in_ent->head->get("resent-to")))
+	{
+		logit("resending requested, doing so.");
+		my @prstos=Mail::Address->parse($rsto);
+		return "Could not parse Resent-To: header!"
+				if (!@prstos);
+		my @rstos=map { $_->address } (@prstos);
+
+		return send_entity($in_ent,$fromaddr,@rstos);
+	}
+
+	# extract and analyze normal and bcc recipients
+	my @tos=extract_addresses($in_ent->head->get("to"));
+	my @ccs=extract_addresses($in_ent->head->get("cc"));
+	my @recips=(@tos,@ccs);
+
+	my @recip_bcc=extract_addresses($in_ent->head->get("bcc"));
+	# and don't leak Bcc...
+	$in_ent->head->delete("bcc");
+
+	# replace to and cc with cleaned headers: we don't want to
+	# leak directives
+	my $newto=join(", ",map { $_->[3] } (@tos));
+	my $newcc=join(", ",map { $_->[3] } (@ccs));
+	$in_ent->head->replace("To",$newto);
+	$in_ent->head->replace("Cc",$newcc) if ($newcc);
+
+	# cry out loud if there is a problem with the submitted mail
+	# and no recipients were distinguishable...
+	# happens sometimes, with mbox-style 'From bla' lines in the headers...
+	return("No recipients found!","The mail headers seem to be garbled, and no To, Cc or Bcc headers could be identified.")
+			if (!@erecips && !@recips && !@recip_bcc);
+
+	# remember the addresses' nature
+	my (%is_bcc);
+	map { $is_bcc{$_->[0]}=1; } (@recip_bcc);
+
+	# now deal with envelope-vs-mailheader recipients:
+	# whatever the envelope says, wins.
+	if (@erecips)
+	{
+		# no need to distinguish these otherwise
+		my (%is_normal,%is_envelope);
+		map { $is_normal{$_->[0]}=1; } (@recips);
+		map { $is_envelope{$_->[0]}=1; } (@erecips);
+
+		for my $e (@erecips)
+		{
 	    # in the envelope but not the headers -> fake bcc
 	    if (!$is_normal{$e->[0]} && !$is_bcc{$e->[0]})
 	    {
-		push @recip_bcc,$e;
-		$is_bcc{$e->[0]}=1;
+				push @recip_bcc,$e;
+				$is_bcc{$e->[0]}=1;
 	    }
-	}
-	# in the headers but not the envelope -> ignore it
-	my @reallyr;
-	for my $n (@recips)
-	{
+		}
+		# in the headers but not the envelope -> ignore it
+		my @reallyr;
+		for my $n (@recips)
+		{
 	    push @reallyr,$n if ($is_envelope{$n->[0]});
+		}
+		@recips=@reallyr;
 	}
-	@recips=@reallyr;
-    }
 
-    # figure out what to do for specific recipients
-    my %actions=findaction($override,\@recips,\@recip_bcc);
+	# figure out what to do for specific recipients
+	my %actions=findaction($override,\@recips,\@recip_bcc);
 
-    # send out unsigned mails first
-    my @rawrecips=grep($actions{$_} eq "none",keys %actions);
-    if (@rawrecips)
-    {
-	logit("sending mail (unchanged) to ".join(", ",@rawrecips));
-	my @res=send_entity($in_ent,$fromaddr,@rawrecips);
-	return @res if (@res);
-    }
-    
-    my ($orig_header,$cryptoin);
-    # prepare various stuff we need only when encrypting or signing
-    if(grep($_ ne "none",values(%actions)))
-    {
-	# copy (mail)header, split header info
-	# in mime-related (remains with the entity) and non-mime
-	# (is saved in the new, outermost header-object)
-	$orig_header=$in_ent->head->dup;
-
-	# content-* stays with the entity and the rest moves to orig_header
-	foreach my $headername ($in_ent->head->tags)
+	# handle reject indications
+	if (my @unsatisfied = grep($actions{$_} eq "reject", keys %actions))
 	{
+		return ("Config prohibits unencrypted email!",
+						"The configuration for ". join(", ", @unsatisfied).
+						" requires that email must be encrypted, but no keys were known or given for these addresses.");
+	}
+
+	# send out unsigned mails first
+	my @rawrecips=grep($actions{$_} eq "none",keys %actions);
+	if (@rawrecips)
+	{
+		logit("sending mail (unchanged) to ".join(", ",@rawrecips));
+		my @res=send_entity($in_ent,$fromaddr,@rawrecips);
+		return @res if (@res);
+	}
+
+	my ($orig_header,$cryptoin);
+	# prepare various stuff we need only when signing+encrypting or signing
+	if(grep($_ ne "none", values(%actions)))
+	{
+		# copy (mail)header, split header info
+		# in mime-related (remains with the entity) and non-mime
+		# (is saved in the new, outermost header-object)
+		$orig_header=$in_ent->head->dup;
+
+		# content-* stays with the entity and the rest moves to orig_header
+		foreach my $headername ($in_ent->head->tags)
+		{
 	    if ($headername !~ /^content-/i)
 	    {
-		# remove the stuff from the entity
-		$in_ent->head->delete($headername);
+				# remove the stuff from the entity
+				$in_ent->head->delete($headername);
 	    }
 	    else
 	    {
-		# remove this stuff from the orig_header
-		$orig_header->delete($headername);
+				# remove this stuff from the orig_header
+				$orig_header->delete($headername);
 	    }
+		}
+
+		# any text/plain parts of the entity have to be fixed with the
+		# correct content-transfer-encoding (qp), since any transfer 8->7bit
+		# on the way otherwise will break the signature.
+		# this is not necessary if encrypting, but done anyways since
+		# it doesnt hurt and we want to be on the safe side.
+		my $res=qp_fix_parts($in_ent);
+		return $res if ($res);
+
+		# now we've got a in entity which is ready to be encrypted/signed
+		# and the mail-headers are saved in $orig_header
+		# next we dump this entity into a file for crypto ops
+		my $fh;
+		($fh,$cryptoin)=mkstemp($config{tempdir}."/cryptoin.XXXX");
+		return("Can't create file $cryptoin: $!")
+				if (!$fh);
+		$in_ent->print($fh);
+		close($fh);
 	}
 
-	# any text/plain parts of the entity have to be fixed with the
-	# correct content-transfer-encoding (qp), since any transfer 8->7bit
-	# on the way otherwise will break the signature.
-	# this is not necessary if encrypting, but done anyways since
-	# it doesnt hurt and we want to be on the safe side.
-	my $res=qp_fix_parts($in_ent);
-	return $res if ($res);
+	# send the mail signed to the appropriate recips
+	my @signto=grep($actions{$_} eq "signonly",keys %actions);
+	if (@signto)
+	{
+		logit("sending mail (signed with $signkey) to ".join(", ",@signto));
+		my @res=&sign_send($in_ent,$cryptoin,$orig_header,$fromaddr,$signkey,
+											 @signto);
+		return @res if (@res);
+	}
 
-	# now we've got a in entity which is ready to be encrypted/signed
-	# and the mail-headers are saved in $orig_header
-	# next we dump this entity into a file for crypto ops
-	my $fh;
-	($fh,$cryptoin)=mkstemp($config{tempdir}."/cryptoin.XXXX");
-	return("can't create file $cryptoin: $!")
-	    if (!$fh);
-	$in_ent->print($fh);
- 	close($fh);
-    } 
-    
-    # send the mail signed to the appropriate recips
-    my @signto=grep($actions{$_} eq "signonly",keys %actions);
-    if (@signto)
-    {
-	logit("sending mail (signed with $signkey) to ".join(", ",@signto));
-	my @res=&sign_send($in_ent,$cryptoin,$orig_header,$fromaddr,$signkey,
-			   @signto);
-	return @res if (@res);
-    }
-
-    # send mail encrypted+signed to appropriate recips.
-    # note: bcc's must be handled separately!
-    my @encto=grep($actions{$_}!~/^(none|signonly)$/ && !$is_bcc{$_}, keys %actions);
-    if (@encto)
-    {
-	logit("sending mail (encrypted+signed with $signkey) to "
-	      .join(", ",@encto));
-	my @enckeys = map { $actions{$_} } (@encto);
-	my @res=&crypt_send($in_ent,$cryptoin,$orig_header,$fromaddr,$signkey,
-			    \@enckeys,@encto);
-	return @res if (@res);
-    }
-    for my $bcc (grep($actions{$_}!~/^(none|signonly)$/ && $is_bcc{$_}, 
-		      keys %actions))
-    {
-	logit("sending mail (bcc,encrypted+signed with $signkey) to $bcc");
-	my @res=&crypt_send($in_ent,$cryptoin,$orig_header,$fromaddr,$signkey,
-			    [$actions{$bcc}],$bcc);
-	return @res if (@res);
-    }
-    return;
+	# send mail encrypted+signed to appropriate recips.
+	# note: bcc's must be handled separately!
+	my @encto=grep($actions{$_}!~/^(none|signonly)$/ && !$is_bcc{$_}, keys %actions);
+	if (@encto)
+	{
+		logit("sending mail (encrypted+signed with $signkey) to "
+					.join(", ",@encto));
+		my @enckeys = map { $actions{$_} } (@encto);
+		my @res=&crypt_send($in_ent,$cryptoin,$orig_header,$fromaddr,$signkey,
+												\@enckeys,@encto);
+		return @res if (@res);
+	}
+	for my $bcc (grep($actions{$_}!~/^(none|signonly)$/ && $is_bcc{$_},
+										keys %actions))
+	{
+		logit("sending mail (bcc,encrypted+signed with $signkey) to $bcc");
+		my @res=&crypt_send($in_ent,$cryptoin,$orig_header,$fromaddr,$signkey,
+												[$actions{$bcc}],$bcc);
+		return @res if (@res);
+	}
+	return;
 }
-
 
 # find the correct action for the given email addresses
 # input: override header, normal and bcc-addresses
-# returns hash with address as key, value is "none", "signonly" or key id
-sub findaction    
+# returns hash with address as key, value is "none", "signonly", "reject"
+# or recipient key id
+sub findaction
 {
-    my ($override,$normalref,$bccref)=@_;
-    my(%actions,%specialkeys,$groupfallback);
+	my ($override,$normalref,$bccref)=@_;
+	my(%actions,%specialkeys,$groupfallback);
 
-    # address lookup in configured overrides
-    foreach my $a (@{$normalref},@{$bccref})
-    {
-	my $addr=$a->[0];
-	foreach (@{$config{overrides}})
+	# address lookup in the list of configured choices
+	foreach my $a (@{$normalref},@{$bccref})
 	{
+		my $addr=$a->[0];
+		foreach (@{$config{overrides}})
+		{
 	    if ($addr =~ $_->{re})
 	    {
-		$actions{$addr}=$_->{action};
-		# remember config-file key overrides
-		$specialkeys{$addr}=$_->{key}
-		if ($_->{key});
-		last;
+				$actions{$addr}=$_->{action};
+				# remember config-file key overrides
+				$specialkeys{$addr}=$_->{key}
+				if ($_->{key});
+				last;
 	    }
-	}
-	# nothing configured? then default action
-	$actions{$addr}||=($config{defaultaction}||"none");
-	dlogit("action $actions{$addr} for $addr");
+		}
+		# nothing configured? then default action
+		$actions{$addr}||=($config{defaultaction}||"none");
+		dlogit("action $actions{$addr} for $addr");
 
-	# blanket override? then override the config but not where
-	# "none" is specified
-	if ($override && $actions{$addr} ne "none")
-	{
+		# blanket override? then override the config but not where
+		# "none" is specified
+		if ($override && $actions{$addr} ne "none")
+		{
 	    dlogit("override header: $override for $addr");
 	    $actions{$addr}=$override;
-	}
+		}
 
-	# next: check individual action=x directives
-	if ($a->[4] =~/action=(none|fallback-all|fallback|signonly)/)
-	{
+		# next: check individual action=x directives
+		if ($a->[4] =~/action=(none|fallback-all|fallback|signonly)/)
+		{
 	    my $thisaction=$1;
 	    $actions{$addr}=$thisaction;
 	    dlogit("local override: action $thisaction for $addr");
-	}
+		}
 
-	if ($a->[4] =~/key=([0-9a-fA-FxX]+)/)
-	{
+		if ($a->[4] =~/key=([0-9a-fA-FxX]+)/)
+		{
 	    $specialkeys{$addr}=$1;
 	    dlogit("local key override: $specialkeys{$addr} for $addr");
-	}
+		}
 
-	# now test for key existence and downgrade action to signonly
-	# where necessary. 
-	if ($actions{$addr}=~/^fallback/)
-	{
+		# now test for key existence and downgrade action to signonly
+		# where necessary - or abort is mustencrypt is selected
+		if ($actions{$addr}=~/^(fallback|mustencrypt)/)
+		{
 	    # group fallback is relevant for normal recipients only
-	    $groupfallback||=($actions{$addr} eq "fallback-all")
-		if (!grep($_->[0] eq $addr,@{$bccref}));
-	    $actions{$addr}=$specialkeys{$addr}||$email2key{$addr}||"signonly";
+	    $groupfallback ||= ($actions{$addr} eq "fallback-all")
+					if (!grep($_->[0] eq $addr, @{$bccref}));
+
+			my $cando = $specialkeys{$addr}||$email2key{$addr}||"signonly";
+			if ($cando eq "signonly" && $actions{$addr} eq "mustencrypt")
+			{
+				$actions{$addr} = "reject";
+				dlogit("$addr requires encryption but no key known or given!");
+			}
+			else
+			{
+				$actions{$addr}= $cando;
+			}
+		}
 	}
-    }
-    
-    # were there any fallback-all? if so and also none or signonly present,
-    # then all recips are downgraded.
-    my @allactions=values %actions;
-    if ($groupfallback && grep(/^(none|signonly)$/,@allactions))
-    {
-	# time to downgrade everybody to signing...
-	for my $a (@{$normalref})
+	return %actions if (grep($_ eq "reject", values %actions));
+
+	# were there any fallback-all? if so and also none or signonly present,
+	# then all recips are downgraded.
+	my @allactions=values %actions;
+	if ($groupfallback && grep(/^(none|signonly)$/,@allactions))
 	{
+		# time to downgrade everybody to signing...
+		for my $a (@{$normalref})
+		{
 	    my $addr=$a->[0];
 	    if ($actions{$addr} ne "none")
 	    {
-		$actions{$addr}="signonly";
-		dlogit("downgrading to signonly for $addr");
+				$actions{$addr}="signonly";
+				dlogit("downgrading to signonly for $addr");
 	    }
+		}
 	}
-    }
-    return %actions;
+	return %actions;
 }
 
 # parses an address-line, extracts all addresses from it
@@ -676,26 +671,26 @@ sub findaction
 # returns array of arrays
 sub extract_addresses
 {
-    my (@lines)=@_;
-    my @details;
+	my (@lines)=@_;
+	my @details;
 
-    for my $a (Mail::Address->parse(@lines))
-    {
-	my ($addr,$comment,$phrase)=(lc($a->address),$a->comment,$a->phrase);
-	# some name "directive,directive..." <an@addre.ss> 
-	if ($phrase=~s/\s*\"([^\"]+)\"\s*//)
+	for my $a (Mail::Address->parse(@lines))
 	{
+		my ($addr,$comment,$phrase)=(lc($a->address),$a->comment,$a->phrase);
+		# some name "directive,directive..." <an@addre.ss>
+		if ($phrase=~s/\s*\"([^\"]+)\"\s*//)
+		{
 	    my $directive=$1;
 	    # clean the phrase up
 	    my $newa=Mail::Address->new($phrase,$addr,$comment);
 	    push @details,[$addr,$phrase,$comment,$newa->format,$directive];
-	}
-	else
-	{
+		}
+		else
+		{
 	    push @details,[$addr,$phrase,$comment,$a->format,undef];
+		}
 	}
-    }
-    return @details;
+	return @details;
 }
 
 # traverses a mime entity and changes all parts with
@@ -704,62 +699,60 @@ sub extract_addresses
 # input: entity, retval: undef if ok, error message otherwise
 sub qp_fix_parts
 {
-    my ($entity)=@_;
-    if ($entity->is_multipart)
-    {
-	foreach ($entity->parts)
+	my ($entity)=@_;
+	if ($entity->is_multipart)
 	{
+		foreach ($entity->parts)
+		{
 	    my $res=&qp_fix_parts($_);
 	    return $res if ($res);
+		}
 	}
-    }
-    else
-    {
-	if ($entity->head->mime_type eq "text/plain"
-	    && $entity->head->mime_encoding eq "8bit"
-	    && lc($entity->head->mime_attr("content-type.charset"))
-	    ne "us-ascii")
+	else
 	{
-	    return("changing Content-Transfer-Encoding failed")
-		if ($entity->head->mime_attr("Content-Transfer-Encoding"
-					     => "quoted-printable")
-		    !="quoted-printable");
+		if ($entity->head->mime_type eq "text/plain"
+				&& $entity->head->mime_encoding eq "8bit"
+				&& lc($entity->head->mime_attr("content-type.charset"))
+				ne "us-ascii")
+		{
+	    return("Changing Content-Transfer-Encoding failed!")
+					if ($entity->head->mime_attr("Content-Transfer-Encoding"
+																			 => "quoted-printable")
+							!="quoted-printable");
+		}
 	}
-    }
-    return;
+	return;
 }
-
 
 # log termination, cleanup, exit
 sub handle_term
 {
-    my ($sig)=@_;
+	my ($sig)=@_;
 
-    $sig="SIG$sig" if (!$options{o}); 
-    logit("Termination requested ($sig), cleaning up");
-    &cleanup($config{tempdir},1);
-    close $config{logfh} if ($config{logfh});
-    exit 0;
+	$sig="SIG$sig" if (!$options{o});
+	logit("Termination requested ($sig), cleaning up");
+	&cleanup($config{tempdir},1);
+	close $config{logfh} if ($config{logfh});
+	exit 0;
 }
 
 # reread configuration file and keyrings
 # no args or return value; intended as a sighandler.
 sub handle_reload
 {
-    my ($sig)=@_;
-    logit("received SIG$sig, reloading");
-    %config=&read_config;
-    %email2key=&read_keyring;
-    # restart mailserver if required
-    # also update pidfile
-    if ($config{"ma-user"} && $config{"ma-pass"} && $config{"maport"})
-    {
-	# fork off the smtp-to-queue daemon
-	my $pid=&start_mailserver;
-	open(PIDF,">$pidf") || &bailout("can't w-open $pidf: $!\n");
-	print PIDF "$$\n$pid\n";
-	close(PIDF);
-    }
+	my ($sig)=@_;
+	logit("received SIG$sig, reloading");
+	%config=&read_config;
+	$parser->output_dir($config{tempdir}); # that thing persists otherwise
+	%email2key=&read_keyring;
+	# restart mailserver if required
+	# also update pidfile
+	if ($config{"ma-user"} && $config{"ma-pass"} && $config{"maport"})
+	{
+		# fork off a new  smtp-to-queue daemon
+		my $pid=&start_mailserver;
+		write_file($pidf, join("\n", $pid, $$));
+	}
 }
 
 # remove temporary stuff left behind in directory $what
@@ -767,21 +760,23 @@ sub handle_reload
 # exception on error, no retval
 sub cleanup
 {
-    my ($what,$remove_what)=@_;
-    my ($name,$res);
+	my ($what,$remove_what)=@_;
+	my ($name,$res);
 
-    opendir(F,$what) || bailout("cant opendir $what: $!");
-    foreach $name (readdir(F))
-    {
-	next if ($name =~ /^\.{1,2}$/o); 
-	(-d "$what/$name")?&cleanup("$what/$name",1):
-	    (unlink("$what/$name") || bailout("cant unlink $what/$name: $!"));
-    }
-    closedir(F);
-    $remove_what && (rmdir("$what") || bailout("cant rmdir $what: $!"));
-    return;
+	finddepth(sub { next if $_ =~ /^\.{1,2}$/; my $fn = $File::Find::name;
+									if (-d $fn)
+									{
+										rmdir($fn) || bailout("cannod rmdir $fn: $!");
+									}
+									else
+									{
+										unlink($fn) || bailout("cannot unlink $fn: $!");
+									}
+						},
+						$what);
+	$remove_what && (rmdir("$what") || bailout("cant rmdir $what: $!"));
+	return;
 }
-
 
 # (re)reads the configuration file
 # calls bailout on problems
@@ -789,195 +784,194 @@ sub cleanup
 # returns %options on success, bailout on error
 sub read_config
 {
-    my %options=
-	(
-	 defaultkey=>undef,
-	 identify=>undef,
-	 defaultaction=>"none",
-	 msserver=>undef,
-	 msuser=>undef,
-	 mspass=>undef,
-	 ssl=>undef,
-	 "ssl-cert"=>undef,
-	 "ssl-key"=>undef,
-	 "ssl-ca"=>undef,
-	 'mspass-from-query-secret'=>undef,
-	 msport=>587,
-	 msp=>"/usr/sbin/sendmail -om -oi -oem",
-	 "use-agent"=>undef,
-	 syslog=>undef,
-	 logfile=>undef,
-	 queuedir=>"$home/.kuvert_queue",
-	 tempdir=>($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp")."/kuvert.$username.$$",
-	 alwaystrust=>undef,
-	 interval=>60,
-	 "query-secret"=>"/bin/sh -c 'stty -echo; read -p \"Passphrase %s: \" X; stty echo; echo \$X'",
-	 "flush-secret"=>undef,
-	 "mail-on-error"=>undef,
-	 "can-detach"=>0,
-	 maport=>2587,
-	 "ma-user"=>undef,
-	 "ma-pass"=>undef,
-	 preamble=>1,
-	 );
-    my @over;
+	my %options = (
+		defaultkey=>undef,
+		identify=>undef,
+		defaultaction=>"none",
+		msserver=>undef,
+		msuser=>undef,
+		mspass=>undef,
+		ssl=>undef,
+		"ssl-cert"=>undef,
+		"ssl-key"=>undef,
+		"ssl-ca"=>undef,
+		'mspass-from-query-secret'=>undef,
+		msport=>587,
+		msp=>"/usr/sbin/sendmail -om -oi -oem",
+		"use-agent"=>undef,
+		syslog=>undef,
+		logfile=>undef,
+		queuedir=>"$home/.kuvert_queue",
+		# $$ not good in tempdir: config is read before fork, then possibly again on -r but by a different process
+		tempdir=>($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp")."/kuvert.$username",
+		alwaystrust=>undef,
+		interval=>60,
+		"query-secret"=>"/bin/sh -c 'stty -echo; read -p \"Passphrase %s: \" X; stty echo; echo \$X'",
+		"flush-secret"=>undef,
+		"mail-on-error"=>undef,
+		"can-detach"=>0,
+		maport=>2587,
+		"ma-user"=>undef,
+		"ma-pass"=>undef,
+		preamble=>1, );
 
-    &bailout("cant open $rcfile: $!")
-	if (!open (F,$rcfile));
-    logit("reading config file");
-    my @stuff=<F>;
-    close F;
-    for (@stuff)
-    {
-	chomp;
-	next if (/^\s*\#/ || /^\s*$/); # strip comments and empty lines
+	my @over;
+	&bailout("cant open $rcfile: $!")
+			if (!open (F,$rcfile));
+	logit("reading config file");
+	my @stuff=<F>;
+	close F;
 
-	# trigger on old config-file style
-	if (/^([[:upper:]]+)\s+(\S.*)\s*$/)
+	for (@stuff)
 	{
+		chomp;
+		next if (/^\s*\#/ || /^\s*$/); # strip comments and empty lines
+
+		# trigger on old config-file style
+		if (/^([[:upper:]]+)\s+(\S.*)\s*$/)
+		{
 	    my $nf=rewrite_conf(@stuff);
 	    die("Can't work with old config, terminating!
 $progname has found an old config file and attempted a ROUGH auto-conversion.
 
-The result has been left in $nf and likely needs to be adjusted 
-for ${progname}'s new features. Please do so and restart $progname 
+The result has been left in $nf and likely needs to be adjusted
+for ${progname}'s new features. Please do so and restart $progname
 with the new config file in place.\n");
-	}
+		}
 
-	if (/^\s+(\S+)\s+(fallback(-all)?(,(0x)?[a-fA-F0-9]+)?|signonly|none)\s*(\#.*)?$/)
-	{
+		if (/^\s+(\S+)\s+(fallback(-all)?(,(0x)?[a-fA-F0-9]+)?|signonly|none|mustencrypt)\s*(\#.*)?$/)
+		{
 	    my ($who,$action)=($1,$2);
 	    my $key;
-	    if ($action=~s/^(fallback(-all)?),((0x)?[a-fA-F0-9]+)/$1/)
+	    if ($action =~ s/^(fallback(-all)?),((0x)?[a-fA-F0-9]+)/$1/)
 	    {
-		$key=$3;
+				$key=$3;
 	    }
-	    push @over,{"who"=>$who,
-			"re"=>qr/$who/,
-			"action"=>$action,
-			"key"=>$key};
+	    push @over, { "who"=>$who,
+										"re"=>qr/$who/,
+										"action"=>$action,
+										"key"=>$key };
 	    dlogit("got override $action "
-		   .($key?"key $key ":"")."for $who");
+						 .($key?"key $key ":"")."for $who");
 	    next;
-	}
+		}
 
-	if (/^\S/)
-	{
+		if (/^\S/)
+		{
 	    my ($key,$value)=split(/\s+/,$_,2);
 	    $key=lc($key);
 	    $value=~s/^(\"|\')(.*)\1$/$2/;
 
 	    bailout("unknown config key \"$key\"")
-		if (!exists $options{$key});
+					if (!exists $options{$key});
 
 	    # booleans
 	    if ($key =~ /^(identify|use-agent|alwaystrust|can-detach|mspass-from-query-secret|preamble)$/)
 	    {
-		bailout("bad value \"$value\" for key \"$key\"")
-		    if ($value !~ /^(0|1|t|f|on|off)$/i);
-		$options{$key}=($value=~/^(1|on|t)$/);
+				bailout("bad value \"$value\" for key \"$key\"")
+						if ($value !~ /^(0|1|t|f|on|off)$/i);
+				$options{$key}=($value=~/^(1|on|t)$/);
 	    }
 	    # numbers
 	    elsif ($key =~ /^(msport|interval|maport)$/)
 	    {
-		bailout("bad value \"$value\" for key \"$key\"")
-		      if ($value!~/^\d+$/);
-		$options{$key}=$value;
+				bailout("bad value \"$value\" for key \"$key\"")
+						if ($value!~/^\d+$/);
+				$options{$key}=$value;
 	    }
 	    # nothing or string
 	    elsif ($key =~ /^(ma-pass|ma-user|mail-on-error|msserver|ssl(-cert|-key|-ca)?|msuser|mspass)$/)
 	    {
-		$options{$key}=$value;
+				$options{$key}=$value;
 	    }
 	    # nothing or program and args
 	    elsif ($key eq "msp")
 	    {
-		bailout("bad value \"$value\" for key \"$key\"")
-		     if ($value && !-x (split(/\s+/,$value))[0]);
-		$options{$key}=$value;
+				bailout("bad value \"$value\" for key \"$key\"")
+						if ($value && !-x (split(/\s+/,$value))[0]);
+				$options{$key}=$value;
 	    }
 	    # program with %s escape
 	    elsif ($key =~ /^(query-secret|flush-secret)$/)
 	    {
-		my ($cmd,$args)=split(/\s+/,$value,2);
-		bailout("bad value \"$value\" for key \"$key\"")
-		     if (!-x $cmd || $args!~/%s/);
-		$options{$key}=$value;
+				my ($cmd,$args)=split(/\s+/,$value,2);
+				bailout("bad value \"$value\" for key \"$key\"")
+						if (!-x $cmd || $args!~/%s/);
+				$options{$key}=$value;
 	    }
 	    # dirs to create
 	    elsif ($key=~/^(queuedir|tempdir)$/)
 	    {
-		$options{$key}=$value;
+				$options{$key}=$value;
 	    }
 	    # the rest are special cases
 	    elsif ($key eq "defaultkey")
 	    {
-		bailout("bad value \"$value\" for key \"$key\"")
-		    if ($value !~ /^(0x)?[a-f0-9]+$/i);
-		$options{$key}=$value;
-
+				bailout("bad value \"$value\" for key \"$key\"")
+						if ($value !~ /^(0x)?[a-f0-9]+$/i);
+				$options{$key}=$value;
 	    }
 	    elsif ($key eq "defaultaction")
 	    {
-		bailout("bad value \"$value\" for key \"$key\"")
-		    if ($value!~/^(fallback|fallback-all|signonly|none)$/);
-		$options{$key}=$value;
+				bailout("bad value \"$value\" for key \"$key\"")
+						if ($value!~/^(fallback|fallback-all|signonly|none|mustencrypt)$/);
+				$options{$key}=$value;
 	    }
 	    elsif ($key eq "syslog")
 	    {
-		# syslog: nothing or a facility
-		bailout("bad value \"$value\" for key \"$key\"")
-		    if ($value && 
-			$value!~/^(authpriv|cron|daemon|ftp|kern|local[0-7]|lpr|mail|news|syslog|user|uucp)$/);
-		$options{$key}=$value;
+				# syslog: nothing or a facility
+				bailout("bad value \"$value\" for key \"$key\"")
+						if ($value &&
+								$value!~/^(authpriv|cron|daemon|ftp|kern|local[0-7]|lpr|mail|news|syslog|user|uucp)$/);
+				$options{$key}=$value;
 	    }
 	    elsif ($key eq "logfile")
 	    {
-		bailout("bad value \"$value\" for key \"$key\"")
-		    if (-e $value && !-w $value);
-		if ($config{$key} ne $value) # deal with changing logfiles
-		{
-		    close($config{logfh}) if (defined $config{logfh});
-		    delete $config{logfh};
-		}
-		$options{$key}=$value;
+				bailout("bad value \"$value\" for key \"$key\"")
+						if (-e $value && !-w $value);
+
+				if ($config{$key} ne $value) # deal with changing logfiles
+				{
+					close($config{logfh}) if (defined $config{logfh});
+					delete $config{logfh};
+				}
+				$options{$key}=$value;
 	    }
 	    dlogit("got config $key=$value");
+		}
 	}
-    }
-    close F;
 
-    # post-config-reading sanity checking
-    if ($options{msserver} && $options{msuser})
-    {
-	bailout("smtp auth requires mspass or mspass-from-query-secret options")
-	    if (!$options{mspass} && !$options{"mspass-from-query-secret"});
-    }	
-
-    # post-config-reading directory fixes
-    for my $v ($options{queuedir},$options{tempdir})
-    {
-	if (!-d $v)
+	# post-config-reading sanity checking
+	if ($options{msserver} && $options{msuser})
 	{
+		bailout("smtp auth requires mspass or mspass-from-query-secret options")
+				if (!$options{mspass} && !$options{"mspass-from-query-secret"});
+	}
+
+	# post-config-reading directory fixes
+	for my $v ($options{queuedir}, $options{tempdir})
+	{
+		if (!-d $v)
+		{
 	    mkdir($v,0700) or bailout("cannot create directory $v: $!\n");
-	}
-	my @stat=stat($v);
-	if ($stat[4] != $< or ($stat[2]&0777) != 0700)
-	{
+		}
+		my @stat=stat($v);
+		if ($stat[4] != $< or ($stat[2]&0777) != 0700)
+		{
 	    bailout("directory $v does not belong to you or has bad mode.");
+		}
 	}
-    }
 
-    $options{overrides}=\@over;
-    return %options;
+	$options{overrides}=\@over;
+	return %options;
 }
 
 sub rewrite_conf
 {
-    my @old=@_;
-    
-    my ($fh,$fn)=mkstemp(($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp")."/config.XXXX");
-    my %xlat=qw(NGKEY defaultkey 
+	my @old=@_;
+
+	my ($fh,$fn)=mkstemp(($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp")."/config.XXXX");
+	my %xlat=qw(NGKEY defaultkey
 		GETSECRET query-secret
 		DELSECRET flush-secret
 		MTA msp
@@ -987,364 +981,360 @@ sub rewrite_conf
 		QUEUEDIR queuedir
 		LOGFILE logfile
 		IDENTIFY identify);
-	      
-    for (@old)
-    {
-	chomp;
-	next if (/^\#/ || /^\s*$/); # strip comments and empty lines
-	
-	if (/^(\S+)\s+((none|std(sign)?|ng(sign)?|fallback)(-force)?)\s*$/)
+
+	for (@old)
 	{
+		chomp;
+		next if (/^\#/ || /^\s*$/); # strip comments and empty lines
+
+		if (/^(\S+)\s+((none|std(sign)?|ng(sign)?|fallback)(-force)?)\s*$/)
+		{
 	    my ($k,$v)=($1,$2);
 	    $v=~s/(std|ng)sign/signonly/;
 	    $v=~s/(std|ng)/fallback/;
 	    $v=~s/fallback-force/fallback-all/;
-	    
+
 	    print $fh ($k eq "DEFAULT"?"defaultaction":" $k")." $v\n\n";
-	}
-	elsif (/^([[:upper:]]+)\s+(\S.*)\s*$/)
-	{
+		}
+		elsif (/^([[:upper:]]+)\s+(\S.*)\s*$/)
+		{
 	    my ($k,$v)=($1,$2);
 	    if ($xlat{$k})
 	    {
-		$k=$xlat{$k};
-		print $fh "$k $v\n\n";
+				$k=$xlat{$k};
+				print $fh "$k $v\n\n";
 	    }
-	}
+		}
     }
-    close $fh;
-    return $fn;
+	close $fh;
+	return $fn;
 }
 
-# read keyring 
+# read keyring
 # needs global %config,$debug
-# returns id-to-key hash, bailout on error
+# returns email-to-keyid hash, bails out on error
 sub read_keyring
 {
-    my %badcauses=('i'=>'invalid, no selfsig','d'=>'disabled',
-		   'r'=>'revoked','e'=>'expired');
-    my %id2key;
+	my %badcauses=('i'=>'invalid, no selfsig','d'=>'disabled',
+								 'r'=>'revoked','e'=>'expired');
+	my %email2key;										# email address to key id
 
-    logit("reading keyring...");
-    my $tf="$config{tempdir}/subproc";
-    
-    my @tmp=`gpg -q --batch --list-keys --with-colons --no-expensive-trust-checks 2>$tf`;
-    bailout("keyring reading failed: $?",(-r $tf && readfile($tf))) 
-	if ($? or $?>>8);
-    logit("finished reading keyring");
-    
-    my ($lastkey,$lasttype);
-    foreach (@tmp)
-    {
-	my @info=split(/:/);
-	# only public keys and uids are of interest
-	next if ($info[0] ne "pub" && $info[0] ne "uid");
-	$info[4] =~ s/^.{8}//;	# truncate key-id
-	    
-	$info[9] =~ s/\\x3a/:/g; # re-insert colons, please
-	    
-	# remember the email address
-	# if no address given: remember this key 
-	# but go on to the uid's to get an email address to
-	# work with
-	my $name;
-	if ($info[9] =~ /(\s|<)([^\s<]+\@[^\s>]+)>?/)
+	logit("reading keyring...");
+	my $tf="$config{tempdir}/subproc";
+
+	my @tmp=`gpg -q --batch --list-keys --with-colons --no-expensive-trust-checks 2>$tf`;
+	bailout("keyring reading failed: $?",(-r $tf && readfile($tf)))
+			if ($? or $? >> 8);
+	logit("finished reading keyring");
+	unlink($tf);
+
+	my $lastkey;
+	foreach (@tmp)
 	{
-	    $name=lc($2);
-	}
-	# check the key: public part or uid?
-	if ($info[0] eq "pub")
-	{
-	    # lets associate this key with the current email address
-	    # if an address is known
-	    $lastkey=$info[4];
-		
-	    if ($name)
-	    {
+		# gpg docs say output is utf8-encoded
+		my $native = Encode::decode('utf-8', $_, Encode::FB_WARN);
+		my @info=split(/:/, $native);
+		# only public keys and uids are of interest
+		next if ($info[0] ne "pub" && $info[0] ne "uid");
+		undef $lastkey if ($info[0] eq "pub"); # clean slate, before the skipping begins
+
+		$info[9] =~ s/\\x3a/:/g; # re-insert colons, please
+
 		# ignore expired, revoked and other bad keys
-		if (defined $badcauses{$info[1]})
+		if (my $skip = $badcauses{$info[1]})
 		{
-		    &logit("ignoring key 0x$info[4], reason: "
-			   .$badcauses{$info[1]});
-		    next;
+			&logit("ignoring $info[0] key 0x$info[4] address $info[9], reason: $skip");
+			dlogit("ignoring $info[0] key 0x$info[4] address $info[9], reason: $skip");
+			next;
 		}
-		
-		$id2key{$name}="0x$lastkey";
-		dlogit("got key 0x$lastkey type $info[3] for $name");
+
+		# if no address given: remember this key and look at the uids for addresses
+		my $address = lc($2) if ($info[9] =~ /(^|\s|<)([^\s<]+\@[^\s>]+)>?/);
+
+		# check the key: public part or uid?
+		if ($info[0] eq "pub")
+		{
+			$lastkey = $info[4];
+			if ($address)
+	    {
+				$email2key{$address}="0x$lastkey";
+				dlogit("got key 0x$lastkey for $address");
 	    }
 	    else
 	    {
-		dlogit("saved key 0x$lastkey, no address known yet");
+				dlogit("memorised key 0x$lastkey, no address known yet");
 	    }
-	    next;
-	}
-	else
-	{
-	    # uid: associate the current address with the key 
+		}
+		else
+		{
+	    # uid: associate the current address with the key
 	    # given in the most recent public key line
-	    if ($name)
+	    if ($address && $lastkey)
 	    {
-		# ignore expired, revoked and other bad keys
-		if (defined $badcauses{$info[1]})
-		{
-		    &logit("ignoring uid $name for 0x$lastkey, "
-			   ."reason: ".$badcauses{$info[1]});
-		    next;
-		}
-		
-		$id2key{$name}="0x$lastkey";
-		dlogit("got key (uid) 0x$lastkey for $name");
+				$email2key{$address}="0x$lastkey";
+				dlogit("got key (uid) 0x$lastkey for $address");
 	    }
 	    else
 	    {
-		dlogit("ignoring uid without valid address");
+				dlogit("ignoring uid without valid address or valid key: $native");
 	    }
+		}
 	}
-    }
-    return %id2key;
+	return %email2key;
 }
 
-# send this mime entity out 
+# send this mime entity out
 # if msserver+port known: use smtp, envelope from is $from
 # otherwise use local msp program with @recips
 # uses global %config
 # returns nothing if ok, @error messages otherwise
 sub send_entity
 {
-    my ($ent,$from,@recips,)=@_;
+	my ($ent,$from,@recips,)=@_;
 
-    if ($config{msserver} && $config{msport})
-    {
-	my $dom=hostname;
-
-	my $s=Net::SMTPS->new( $config{msserver}, Port => $config{msport},
-			       Hello => $dom,
-			       doSSL => $config{ssl},
-			       SSL_key_file => $config{"ssl-key"},
-			       SSL_cert_file => $config{"ssl-cert"},
-			       SSL_ca_file => $config{"ssl-ca"} );
-	return("cannot connect to mail server ".$config{msserver}.": $!")
-	    if (!$s);
-
-	# do smtp auth if asked to
-	if ($config{msuser})
+	if ($config{msserver} && $config{msport})
 	{
+		my $dom=hostname;
+
+		my $s=Net::SMTPS->new( $config{msserver}, Port => $config{msport},
+													 Hello => $dom,
+													 doSSL => $config{ssl},
+													 SSL_key_file => $config{"ssl-key"},
+													 SSL_cert_file => $config{"ssl-cert"},
+													 SSL_ca_file => $config{"ssl-ca"} );
+		return("Cannot connect to mail server ".$config{msserver}.": $!")
+				if (!$s);
+
+		# do smtp auth if asked to
+		if ($config{msuser})
+		{
 	    my $authed;
 	    while (!$authed)
 	    {
-		if (!$config{mspass} && $config{"mspass-from-query-secret"})
-		{
-		    my $cmd=sprintf($config{"query-secret"},"smtp-password");
-		    $config{mspass}=`$cmd`;
+				if (!$config{mspass} && $config{"mspass-from-query-secret"})
+				{
+					my $cmd=sprintf($config{"query-secret"},"smtp-password");
+					$config{mspass}=`$cmd`;
 
-		    return("couldn't get smtp password via query-secret: $!") 
-			if (!$config{mspass});
-		    chomp($config{mspass});
-		}
+					return("Couldn't get smtp password via query-secret: $!")
+							if (!$config{mspass});
+					chomp($config{mspass});
+				}
 
-		$authed=$s->auth($config{msuser},$config{mspass});
-		
-		# bailout if we can't requery
-		if (!$authed)
-		{
-		    # get rid of the apparently dud password and try again
-		    delete $config{mspass};
-		    if ($config{"mspass-from-query-secret"})
-		    {
-			my $cmd=sprintf($config{"flush-secret"},"smtp-password");
-			system($cmd);	# ignore the flushing result; best effort only
-		    }
-		    else
-		    {
-			return("smtp auth failed: ".$s->code." ".$s->message);
-		    }
-		}
+				$authed=$s->auth($config{msuser},$config{mspass});
+
+				# bailout if we can't requery
+				if (!$authed)
+				{
+					# get rid of the apparently dud password and try again
+					delete $config{mspass};
+					if ($config{"mspass-from-query-secret"})
+					{
+						my $cmd=sprintf($config{"flush-secret"},"smtp-password");
+						system($cmd);	# ignore the flushing result; best effort only
+					}
+					else
+					{
+						return("SMTP auth failed: ".$s->code." ".$s->message);
+					}
+				}
 	    }
-	}
+		}
 
-	$s->mail($from) 
-	    or return("mailserver rejected our from address \"$from\": ".$s->code." ".$s->message);
-	my @okrecips=$s->to(@recips, { SkipBad => 1 });
-	if (@okrecips != @recips)
-	{
+		$s->mail($from)
+				or return("Mailserver rejected our from address \"$from\": ".$s->code." ".$s->message);
+		my @okrecips=$s->to(@recips, { SkipBad => 1 });
+		if (@okrecips != @recips)
+		{
 	    my %seen;
 	    map { $seen{$_}=1; } (@recips);
 	    map { ++$seen{$_}; } (@okrecips);
 	    my @missed=grep $seen{$_}==1, keys %seen;
-	    
-	    return ("mailserver rejected some recipients!",
-		    "rejected: ".join(", ",@missed),
-		    "info: ".$s->code." ".$s->message);
-	}
-	$s->data($ent->as_string) or return("mailserver rejected our data: ".$s->code." ".$s->message);
-	$s->quit;
-    }
-    else
-    {
-	# pipeline to msp, but we do it ourselves: safe cmd handling
-	my $pid=open(TOMTA,"|-");
-	return("cant open pipe to msp: $!") if (!defined $pid);
-	if ($pid)
-	{
-	    $ent->print(\*TOMTA);
-	    close(TOMTA) || return("error talking to msp: $?");
+
+	    return ("Mailserver rejected some recipients!",
+							"rejected: ".join(", ",@missed),
+							"info: ".$s->code." ".$s->message);
+		}
+		$s->data($ent->as_string) or return("Mailserver rejected our data: ".$s->code." ".$s->message);
+		$s->quit;
 	}
 	else
 	{
+		# pipeline to msp, but we do it ourselves: safe cmd handling
+		my $pid=open(TOMTA,"|-");
+		return("Can't open pipe to MSP: $!") if (!defined $pid);
+		if ($pid)
+		{
+	    $ent->print(\*TOMTA);
+	    close(TOMTA) || return("Error talking to MSP: $?");
+		}
+		else
+		{
 	    my @cmd=split(/\s+/,$config{msp});
 	    push @cmd,'-f',$from;
 	    push @cmd,@recips;
-	    exec(@cmd) or return("error executing msp: $!");
+	    exec(@cmd) or return("Error executing MSP: $!");
+		}
 	}
-    }
-    return;
+	return;
 }
 
-# sign/encrypt a file
-# input: sign key, infile and outfile path, recipient keys 
-# if encryption wanted.
+# sign or sign+encrypt a file
+# input: sign key, infile and outfile path, recipient keys if encryption wanted.
 # input must be existing filename, outfile must not exist.
 # signkey overrides config-defaultkey, and is optional.
 # uses global %config
-# returns: (undef,hashalg) if ok, (1,undef) if bad passphrase, 
+# returns: (undef,hashalgname) if ok, (1,undef) if bad passphrase,
 #(2,errorinfo) otherwise
 sub sign_encrypt
 {
-    my ($signkey,$infile,$outfile,@recips)=@_;
-    my @cmd=qw(gpg -q -t -a --batch --status-fd 2);
-    my ($precmd,$pid);
+	my ($signkey,$infile,$outfile,@recips)=@_;
+	my @cmd=qw(gpg -q -t -a --batch --status-fd 2);
+	my ($precmd,$pid);
 
-    push @cmd,"--always-trust" if ($config{alwaystrust});
+	push @cmd,"--always-trust" if ($config{alwaystrust});
+	$signkey=$config{defaultkey} if ($config{defaultkey} && !$signkey);
+	push @cmd,"--default-key",$signkey if ($signkey);
 
-    $signkey=$config{defaultkey} if ($config{defaultkey} && !$signkey);
-    push @cmd,"--default-key",$signkey if ($signkey);
-
-    # should we leave the passphrase handling to gpg/gpg-agent?
-    # otherwise, we run a query program in a pipeline
-    # after determining what passphrase gpg is looking for
-    if ($config{"use-agent"})
-    {
-	push @cmd,"--use-agent";
-    } 
-    
-    if (@recips)
-    {
-	push @cmd, qw(--encrypt --sign), map { ("-r",$_) } (@recips);
-    }
-    else
-    {
-	push @cmd,"--detach-sign";
-    }
-
-    if (!$config{"use-agent"})
-    {
-	# now determine which passphrase to query for:
-	# run gpg once without data, and analyze the status text
-	$pid=open(F,"-|");
-	if (!defined $pid)
-	{
-	    return (2,"Error: could not run gpg: $!");
-	}
-	elsif (!$pid)
-	{
-	    # child: dup stderr to stdout and exec gpg
-	    open STDERR, ">&",\*STDOUT 
-		or bailout("can't dup2 stderr onto stdout: $!\n");
-	    exec(@cmd) or bailout("exec gpg failed: $!\n");
-	}
-	# read the status stuff in and determine the passphrase required
-	for my $l (<F>)
-	{
-	    if ($l=~/^\[GNUPG:\] NEED_PASSPHRASE ([a-fA-F0-9]+) ([a-fA-F0-9]+) \d+ \d+$/)   
-	    {
-		$precmd=sprintf($config{"query-secret"},"0x$2");
-		push @cmd,"--passphrase-fd",0;
-		last;
-	    }
-	}
-	close(F);
-    }
-    push @cmd,"-o",$outfile,$infile;
-
-    # now run gpg, read back stdout/stderr
-    $pid=open(F,"-|");
-    if (!defined $pid)
-    {
-	return (2, "Error: could not run gpg: $!");
-    }
-    elsif (!$pid)
-    {
-	# with agent: simply run gpg
+	# should we leave the passphrase handling to gpg/gpg-agent?
+	# otherwise, we run a query program in a pipeline
+	# after determining what passphrase gpg is looking for
 	if ($config{"use-agent"})
 	{
-	    # collapse stderr and stdout
-	    open STDERR, ">&",\*STDOUT 
-		or bailout("can't dup2 stderr onto stdout: $!\n");
-	    exec(@cmd) or bailout("exec gpg failed: $!\n");
+		push @cmd,"--use-agent";
+	}
+
+	if (@recips)
+	{
+		push @cmd, qw(--encrypt --sign), map { ("-r",$_) } (@recips);
 	}
 	else
 	{
-	    # without agent: run the query program 
+		push @cmd,"--detach-sign";
+	}
+
+	if (!$config{"use-agent"})
+	{
+		# now determine which passphrase to query for:
+		# run gpg once without data, and analyze the status text
+		$pid=open(F,"-|");
+		if (!defined $pid)
+		{
+	    return (2,"Could not run gpg: $!");
+		}
+		elsif (!$pid)
+		{
+	    # child: dup stderr to stdout and exec gpg
+	    open STDERR, ">&",\*STDOUT
+					or bailout("Can't dup2 stderr onto stdout: $!\n");
+	    exec(@cmd) or bailout("exec gpg failed: $!\n");
+		}
+		# read the status stuff in and determine the passphrase required
+		for my $l (<F>)
+		{
+	    if ($l=~/^\[GNUPG:\] NEED_PASSPHRASE ([a-fA-F0-9]+) ([a-fA-F0-9]+) \d+ \d+$/)
+	    {
+				$precmd=sprintf($config{"query-secret"},"0x$2");
+				push @cmd,"--passphrase-fd",0;
+				last;
+	    }
+		}
+		close(F);
+	}
+	push @cmd,"-o",$outfile,$infile;
+
+	# now run gpg, read back stdout/stderr
+	$pid=open(F,"-|");
+	if (!defined $pid)
+	{
+		return (2, "Could not run gpg: $!");
+	}
+	elsif (!$pid)
+	{
+		# with agent: simply run gpg
+		if ($config{"use-agent"})
+		{
+	    # collapse stderr and stdout
+	    open STDERR, ">&",\*STDOUT
+					or bailout("can't dup2 stderr onto stdout: $!\n");
+	    exec(@cmd) or bailout("exec gpg failed: $!\n");
+		}
+		else
+		{
+	    # without agent: run the query program
 	    # in yet another pipeline to gpg
 
 	    # read from child: query prog in child
 	    # whereas we run gpg
-	    my $pidc=open(G,"-|"); 
+	    my $pidc=open(G,"-|");
 	    if (!defined($pidc))
 	    {
-		bailout("Error: couldn't fork: $!\n");
+				bailout("Error: couldn't fork: $!\n");
 	    }
 	    elsif (!$pidc)
 	    {
-		# child: run query prog with stderr separated
-		exec($precmd) or die("exec $precmd failed: $!\n");
+				# child: run query prog with stderr separated
+				exec($precmd) or die("exec $precmd failed: $!\n");
 	    }
 	    # parent: we run gpg
 	    # dup stderr to stdout and exec gpg
-	    open STDERR, ">&",\*STDOUT 
-		or bailout("can't dup2 stderr onto stdout: $!\n");
-	    open STDIN, ">&", \*G 
-		or bailout("can't dup stdin onto child-pipe: $!\n");
+	    open STDERR, ">&",\*STDOUT
+					or bailout("can't dup2 stderr onto stdout: $!\n");
+	    open STDIN, ">&", \*G
+					or bailout("can't dup stdin onto child-pipe: $!\n");
 	    exec(@cmd) or bailout("exec gpg failed: $!\n");
+		}
 	}
-    }
-    # outermost parent: read gpg status info
-    my @output;
-    eval { 
-	local $SIG{ALRM}=sub { die "alarm\n"; };
-	alarm $timeout;
-	@output=<F>;
-	alarm 0;
-        close(F);
-    };
-    if ($@)
-    {
-	logit("gpg timeout!");
-	kill("TERM",$pid);
-	return (1,undef);
-    }
-    elsif ($? or $?>>8)
-    {
-	#  no complaints if gpg just dislikes the passphrase
-	return (1,undef)
-	    if (grep(/(MISSING|BAD)_PASSPHRASE/,@output));
+	# outermost parent: read gpg status info
+	my @output;
+	eval {
+		local $SIG{ALRM}=sub { die "alarm\n"; };
+		alarm $timeout;
+		@output=<F>;
+		alarm 0;
+		close(F);
+	};
+	if ($@)
+	{
+		logit("gpg timeout!");
+		kill("TERM",$pid);
+		return (1, undef);
+	}
+	elsif ($? or $?>>8)
+	{
+		#  no complaints if gpg just dislikes the passphrase
+		return (1,undef)
+				if (grep(/(MISSING|BAD)_PASSPHRASE/,@output));
 
-	return (2,"Error: gpg terminated with $?",
-	      "Detailed error messages:",@output);
-    }
+		return (2,"gpg terminated with $?",
+						"Detailed error messages:",@output);
+	}
 
-    if (my @infoline = grep(/^\[GNUPG:\] SIG_CREATED/, @output))
-    {
-	# output format:
-	# [GNUPG:] SIG_CREATED <type> <pubkey algo> <hash algo> <class> <timestamp> <key fpr>
-	my @infoparts = split(/\s+/,$infoline[0]);
-	my $hashname = $hashalgos{$infoparts[4]};
-	return (undef,$hashname) if defined $hashname;
-    }
+	if (my @infoline = grep(/^\[GNUPG:\] SIG_CREATED/, @output))
+	{
+		# output format:
+		# [GNUPG:] SIG_CREATED <type> <pubkey algo> <hash algo> <class> <timestamp> <key fpr>
+		my @infoparts = split(/\s+/,$infoline[0]);
 
-    # cheap catch-all, including unknown hash algo identifiers
-    return (2, "Error: gpg did not complete the operation",
-	    "Detailed error messages:",@output);
+		# from rfc4880, section 9.4. required for multipart/signed
+		# to translate gpg's numeric status output into names that
+		# rfc3156 likes
+		my %hashalgos = (
+			1 => "pgp-md5",
+			2 => "pgp-sha1",
+			3 => "pgp-ripemd160",
+			8 => "pgp-sha256",
+			9 => "pgp-sha384",
+			10 => "pgp-sha512",
+			11 => "pgp-sha224", );
+
+		my $hashname = $hashalgos{$infoparts[4]};
+		return (undef,$hashname) if defined $hashname;
+	}
+
+	# cheap catch-all, including unknown hash algo identifiers
+	return (2, "gpg did not complete the operation",
+					"Detailed error messages:",@output);
 }
 
 # logs the argument strings to syslog and/or the logfile
@@ -1352,36 +1342,35 @@ sub sign_encrypt
 # returns nothing
 sub logit
 {
-    my (@msgs)=@_;
+	my (@msgs)=@_;
 
-    if ($config{logfile}) 	# our own logfile?
-    {
-	if (!$config{logfh})	# not open yet?
+	if ($config{logfile}) 	# our own logfile?
 	{
+		if (!$config{logfh})	# not open yet?
+		{
 	    $config{logfh}=FileHandle->new(">>$config{logfile}");
-	    die "can't open logfile $config{logfile}: $!\n" 
-		if (!$config{logfh});
+	    die "can't open logfile $config{logfile}: $!\n"
+					if (!$config{logfh});
 	    $config{logfh}->autoflush(1);
+		}
+
+		print { $config{logfh} } scalar(localtime)." ".join("\n\t",@msgs)."\n";
 	}
 
-	print { $config{logfh} } scalar(localtime)." ".join("\n\t",@msgs)."\n";
-    }
-
-    if ($config{syslog})
-    {
-	setlogsock('unix');
-	openlog($progname,"pid,cons",$config{syslog});
-	syslog("notice",join("\n",@msgs));
-	closelog;
-    }
+	if ($config{syslog})
+	{
+		setlogsock('unix');
+		openlog($progname,"pid,cons",$config{syslog});
+		syslog("notice",join("\n",@msgs));
+		closelog;
+	}
 }
 
 # debug log to stderr
 sub dlogit
 {
-    print STDERR join("\n",@_)."\n" if ($debug);
+	print STDERR join("\n",@_)."\n" if ($debug);
 }
-
 
 # alerts the user of some problem
 # this is done via the normal logging channels,
@@ -1391,135 +1380,143 @@ sub dlogit
 # sender and recipient are set to mail-on-error config entry
 sub alert
 {
-    my (@msgs)=@_;
-    
-    logit(@msgs);
-    if (!$config{"can-detach"})
-    {
-	print STDERR join("\n\t",@msgs)."\n";
-    }
-    if ($config{"mail-on-error"})
-    {
-	my $heading=shift @msgs;
-	my $out=join("\n",@msgs);
-	my $ent=MIME::Entity->build(From=>$config{"mail-on-error"},
-				  To=>$config{"mail-on-error"},
-				  Subject=>($progname.": $heading"),
-				  Data=>\$out);
-	send_entity($ent,$config{"mail-on-error"},$config{"mail-on-error"});
-    }
+	my (@msgs)=@_;
+
+	logit(@msgs);
+	if (!$config{"can-detach"})
+	{
+		print STDERR join("\n\t",@msgs)."\n";
+	}
+	if ($config{"mail-on-error"})
+	{
+		my $heading=shift @msgs;
+		my $out=join("\n",@msgs);
+		my $ent=MIME::Entity->build(From=>$config{"mail-on-error"},
+																To=>$config{"mail-on-error"},
+																Subject=>($progname.": $heading"),
+																Data=>\$out);
+		send_entity($ent,$config{"mail-on-error"},$config{"mail-on-error"});
+	}
 }
 
 # alert of a problem and die
 sub bailout
 {
-    my (@msgs)=@_;
-    $msgs[0]="Fatal: ".$msgs[0];
-    alert(@msgs);
-    
-    # don't bother writing to stderr if alert already took care of that
-    exit(1)
-	if (!$config{"can-detach"});	
-    die(scalar(localtime).join("\n\t",@msgs)."\n");
+	my (@msgs)=@_;
+	$msgs[0]="Fatal: ".$msgs[0];
+	alert(@msgs);
+
+	# don't bother writing to stderr if alert already took care of that
+	exit(1)
+			if (!$config{"can-detach"});
+	die(scalar(localtime).join("\n\t",@msgs)."\n");
 }
 
 # returns pid of new mailserver process
 # dies if unsuccessful
 sub start_mailserver
 {
-    # fork off the smtp-to-queue daemon
-    my $pid=fork;
-    if (!defined($pid))
-    {
-	bailout("cannot fork: $!\n");
-    }
-    elsif (!$pid)
-    {	
-	# run mailserver, which does never reload the config
-	$0=$listenername;
-	close STDIN;
-	close PIDF;		# clears the inherited lock
-	map { $SIG{$_}='DEFAULT'; } qw(USR1 HUP INT QUIT TERM);
-	&accept_mail;
-    }
-    # parent
-    return $pid;
+	# fork off the smtp-to-queue daemon
+	my $pid=fork;
+	if (!defined($pid))
+	{
+		bailout("cannot fork: $!\n");
+	}
+	elsif (!$pid)
+	{
+		# run mailserver, which does never reload the config
+		$0=$listenername;
+		open(STDIN, "/dev/null") or die "cannot open /dev/null: $!\n";
+		# default sighandlers
+		map { $SIG{$_}='DEFAULT'; } qw(USR1 HUP INT QUIT TERM);
+		&accept_mail;
+	}
+	# parent
+	return $pid;
 }
 
 # run a receive-only mailserver on localhost and spool to queue
 # does not terminate except signalled
 sub accept_mail
 {
-    my $server = IO::Socket::INET->new(Listen=>1,
-				       ReuseAddr=>1,
-				       LocalAddr=>"127.0.0.1",
-				       LocalPort=>$config{"maport"},);
-    bailout("setting up listening port failed: $!") if (!$server);
-    
-    while(my $conn = $server->accept)
-    {
-	my $esmtp = Net::Server::Mail::ESMTP->new(socket=>$conn);
-	$esmtp->register('Net::Server::Mail::ESMTP::plainAUTH');
+	my $server = IO::Socket::INET->new(Listen=>1,
+																		 ReuseAddr=>1,
+																		 LocalAddr=>"127.0.0.1",
+																		 LocalPort=>$config{"maport"},);
+	bailout("setting up listening port failed: $!") if (!$server);
 
-	$esmtp->set_callback(MAIL=>\&req_auth);
-	$esmtp->set_callback(RCPT=>\&req_auth);
-	$esmtp->set_callback(AUTH=>\&check_auth);
-	$esmtp->set_callback("DATA-INIT"=>\&start_mail);
-	$esmtp->set_callback("DATA-PART"=>\&cont_mail);
-	$esmtp->set_callback(DATA => \&finish_mail);
-	$esmtp->process();
-	$conn->close();
-    }
+	while(my $conn = $server->accept)
+	{
+		my $esmtp = Net::Server::Mail::ESMTP->new(socket=>$conn);
+		$esmtp->register('Net::Server::Mail::ESMTP::plainAUTH');
+
+		$esmtp->set_callback(MAIL=>\&req_auth);
+		$esmtp->set_callback(RCPT=>\&req_auth);
+		$esmtp->set_callback(AUTH=>\&check_auth);
+		$esmtp->set_callback("DATA-INIT"=>\&start_mail);
+		$esmtp->set_callback("DATA-PART"=>\&cont_mail);
+		$esmtp->set_callback(DATA => \&finish_mail);
+		$esmtp->process();
+		$conn->close();
+	}
 }
 
+# small helper for accept_mail, to enforce our submitter credentials
+# has to return 0/1
 sub check_auth
 {
-    my ($session,$user,$pwd)=@_;
-    return ($user eq $config{'ma-user'} and $pwd eq $config{'ma-pass'});
+	my ($session,$user,$pwd)=@_;
+	return ($user eq $config{'ma-user'} and $pwd eq $config{'ma-pass'});
 }
 
+# small helper for accept_mail, to enforce auth in general
+# has to return (ok or not, smtp error code, message)
 sub req_auth
 {
-    my ($session,$input)=@_;
-    if (!$session->{AUTH}->{completed})
-    {
-	return(0,530,"5.7.0 Authentication Required");
-    }
-    return(0,550,"Invalid Address.")
-	if (!extract_addresses($input));
-    return 1;
+	my ($session,$input)=@_;
+	if (!$session->{AUTH}->{completed})
+	{
+		return(0,530,"5.7.0 Authentication Required");
+	}
+	return(0,550,"Invalid Address.")
+			if (!extract_addresses($input));
+	return 1;
 }
 
+# small helper for accept_mail, checks the things
+# when the DATA command is issued
+# has to return (ok or not, smtp error code, message)
 sub start_mail
 {
-    my($session,$data) = @_;
+	my($session,$data) = @_;
 
-    my @recipients = $session->get_recipients();   
-    my $sender = $session->get_sender();
-    return(0,554,'No recipients given.') if (!@recipients);
-    return(0,554,'No sender given.') if (!$sender);
+	my @recipients = $session->get_recipients();
+	my $sender = $session->get_sender();
+	return(0,554,'No recipients given.') if (!@recipients);
+	return(0,554,'No sender given.') if (!$sender);
 
-    my $qid=join("",Time::HiRes::gettimeofday);
-    my $fn=$config{queuedir}."/".$qid;
-    if (!open(F,">$fn"))
-    {
-	alert("can't open new queuefile $fn: $!");
-	return(0,450,"can't create queuefile. please try again later.");
-    }
-    if (!flock(F,LOCK_NB|LOCK_EX))
-    {
-	alert("can't lock queuefile $qid: $!");
-	return(0,450,"can't lock queuefile. please try again later.");
-    }
-    print F "X-Kuvert-From: $sender\nX-Kuvert-To: "
-	.join(", ",@recipients)."\n";
-    logit("queueing email from $sender to ".join(", ",@recipients));
-    
-    $session->{DATA}->{qfh}=\*F;
-    $session->{DATA}->{qid}=$qid;
-    return 1;
+	my $qid=join("",Time::HiRes::gettimeofday);
+	my $fn=$config{queuedir}."/".$qid;
+	if (!open(F,">$fn"))
+	{
+		alert("can't open new queuefile $fn: $!");
+		return(0,450,"can't create queuefile. please try again later.");
+	}
+	if (!flock(F,LOCK_NB|LOCK_EX))
+	{
+		alert("can't lock queuefile $qid: $!");
+		return(0,450,"can't lock queuefile. please try again later.");
+	}
+	print F "X-Kuvert-From: $sender\nX-Kuvert-To: "
+			.join(", ",@recipients)."\n";
+	logit("queueing email from $sender to ".join(", ",@recipients));
+
+	$session->{DATA}->{qfh}=\*F;
+	$session->{DATA}->{qid}=$qid;
+	return 1;
 }
 
+# small helper for accept_mail, handles interim DATA blobs
 sub cont_mail
 {
     my ($session,$dr)=@_;
@@ -1528,33 +1525,35 @@ sub cont_mail
     return 1;
 }
 
+# small helper for accept_mail, handles the end
+# of the DATA phase
+# has to return (ok or not, smtp error code, message)
 sub finish_mail
 {
-    my ($session,$dr)=@_;
-    print {$session->{DATA}->{qfh}} $$dr;
-    undef $$dr;
+	my ($session,$dr)=@_;
+	print {$session->{DATA}->{qfh}} $$dr;
+	undef $$dr;
 
-    my $qid=$session->{DATA}->{qid};
-    if (!close($session->{DATA}->{qfh}))
-    {
-	alert("could not close queuefile $qid: $!");
-	return(0,450,"could not close queuefile");
-    }
-    logit("finished enqueueing mail $qid");
-    return(1,250,"Mail enqueued as $qid");
+	my $qid=$session->{DATA}->{qid};
+	if (!close($session->{DATA}->{qfh}))
+	{
+		alert("could not close queuefile $qid: $!");
+		return(0,450,"could not close queuefile");
+	}
+	logit("finished enqueueing mail $qid");
+	return(1,250,"Mail enqueued as $qid");
 }
 
 
-
 __END__
-    
+
 =pod
 
 =head1 NAME
 
 kuvert - Automatically sign and/or encrypt emails based on the recipients
 
-=head1 SYNOPSIS 
+=head1 SYNOPSIS
 
 kuvert [-d] [-o] [-r|-k]
 
@@ -1563,21 +1562,21 @@ kuvert [-d] [-o] [-r|-k]
 Kuvert is a tool to protect the integrity and secrecy of your outgoing email
 independent of your mail client and with minimal user interaction.
 
-It reads mails from its queue (or accepts SMTP submissions), 
-analyzes the recipients and decides to whom it should encrypt and/or 
-sign the mail. The resulting mail is coerced into the PGP-MIME framework 
-defined in RFC3156 and finally sent to your outbound mail server. 
+It reads mails from its queue (or accepts SMTP submissions),
+analyzes the recipients and decides to whom it should encrypt and/or
+sign the mail. The resulting mail is coerced into the PGP-MIME framework
+defined in RFC3156 and finally sent to your outbound mail server.
 Kuvert uses GnuPG for all cryptographic tasks and is designed to interface
 cleanly with external secret caching tools.
 
 =head1 OPTIONS
 
 After startup kuvert periodically scans its queue directory and processes
-mails from there; depending on your GnuPG passphrase setup kuvert 
-may daemonize itself. In either case, kuvert runs forever until 
+mails from there; depending on your GnuPG passphrase setup kuvert
+may daemonize itself. In either case, kuvert runs forever until
 actively terminated.
 
-Kuvert's behaviour is configured primarily using a configuration file, 
+Kuvert's behaviour is configured primarily using a configuration file,
 with exception of the following commandline options:
 
 =over
@@ -1587,7 +1586,7 @@ with exception of the following commandline options:
 Enables debugging mode: extra debugging information is written to STDERR.
 (This is independent of normal logging.)
 
-=item -o 
+=item -o
 
 Enables one-shot mode: kuvert does not loop forever but processes
 only the current queue contents and then exits. Kuvert does also not
@@ -1608,31 +1607,31 @@ to sending a SIGTERM to the respective process.
 
 =head1 OPERATION
 
-At startup kuvert reads its configuration file and your gnugp keyring and 
-remembers the association of email addresses to keys. 
+At startup kuvert reads its configuration file and your gnugp keyring and
+remembers the association of email addresses to keys.
 
-Kuvert then works as a wrapper around your mail transfer agent (MTA): 
-you author your emails like always but instead of sending them out 
+Kuvert then works as a wrapper around your mail transfer agent (MTA):
+you author your emails like always but instead of sending them out
 directly you submit them to kuvert.
 
 Periodically kuvert scans its queue and processes any email therein.
 If your keyring contains a key for a recipient, kuvert will
 encrypt and sign the email to that recipient. If no key is available, kuvert
-will only (clear/detached-)sign the email. Subsequently, the email 
-is sent onwards using your MTA program or SMTP. 
+will only (clear/detached-)sign the email. Subsequently, the email
+is sent onwards using your MTA program or SMTP.
 
-Emails to be processed can 
-have any valid MIME structure; kuvert unpacks the 
-MIME structure losslessly and repacks the (encrypted/signed) mail 
-into a PGP/MIME object as described in RFC3156. The mail's structure is 
-preserved. Signature and encryption cover all of the mail content with 
-the exception of the top-level headers: for example the "Subject" header 
-will be passed in clear, whereas any body or attached MIME object will be 
+Emails to be processed can
+have any valid MIME structure; kuvert unpacks the
+MIME structure losslessly and repacks the (encrypted/signed) mail
+into a PGP/MIME object as described in RFC3156. The mail's structure is
+preserved. Signature and encryption cover all of the mail content with
+the exception of the top-level headers: for example the "Subject" header
+will be passed in clear, whereas any body or attached MIME object will be
 signed/encrypted.
 
-The encrypt-or-sign decision can be overridden on a per-address basis 
-using the configuration file or, even more fine-grainedly, by using directives 
-in the actual email. Kuvert can also be told not to modify an email 
+The encrypt-or-sign decision can be overridden on a per-address basis
+using the configuration file or, even more fine-grainedly, by using directives
+in the actual email. Kuvert can also be told not to modify an email
 at all.
 
 =head2 Submitting Emails to Kuvert
@@ -1642,73 +1641,73 @@ Kuvert operates on files with numeric file names only. Anything that you
 store in its queue directory with such a filename will be treated as containing
 a single RFC2822-formatted email.
 
-However, no mainstream MUA supports such a drop-your-files-somewhere scheme, 
+However, no mainstream MUA supports such a drop-your-files-somewhere scheme,
 and therefore kuvert comes with a helper program
-called kuvert_submit (see L<kuvert_submit(1)>)  which mimics 
-sendmail's mail submission 
-behaviour but feeds to the kuvert queue. If your MUA can be instructed 
+called kuvert_submit (see L<kuvert_submit(1)>)  which mimics
+sendmail's mail submission
+behaviour but feeds to the kuvert queue. If your MUA can be instructed
 to run a program for mail submission, kuvert_submit can be used.
 
 Alternatively, you can send your email to kuvert via SMTP. Kuvert comes with
 a built-in receive-only mail server, which feeds to the queue directory.
-As allowing others to submit emails for your signature would be 
-silly and dangerous, kuvert's mail server only listens on the localhost IP 
+As allowing others to submit emails for your signature would be
+silly and dangerous, kuvert's mail server only listens on the localhost IP
 address and requires that your MUA uses SMTP Authentication to ensure
-that only your submissions are accepted. If your MUA supports SMTP AUTH 
-PLAIN or LOGIN and can be told to use localhost and a specific port 
+that only your submissions are accepted. If your MUA supports SMTP AUTH
+PLAIN or LOGIN and can be told to use localhost and a specific port
 for outbound email, then you can use this mechanism.
 
 =head2 Transporting Emails Onwards
 
-Kuvert can send outbound emails either by running a local MTA program 
+Kuvert can send outbound emails either by running a local MTA program
 or by speaking SMTP to some (fixed) outbound mail server of your choice.
 
 =head2 Recipients, Identities and the SMTP Envelope
 
-In general kuvert identifies recipients using the To, Cc, Bcc and 
+In general kuvert identifies recipients using the To, Cc, Bcc and
 Resent-To headers of the queued email. If the mechanism you used
-to submit the mail to kuvert did explicitely set recipients, then 
-these B<override> the headers within the email. 
+to submit the mail to kuvert did explicitely set recipients, then
+these B<override> the headers within the email.
 
 This is the case if kuvert_submit is called with a list of recipients
 and no -t option and for SMTP submission.
 
-If kuvert enqueues email via inbound SMTP, the SMTP envelope 
-B<overrides> the email headers: recipients that are present in the 
+If kuvert enqueues email via inbound SMTP, the SMTP envelope
+B<overrides> the email headers: recipients that are present in the
 envelope but not the headers are treated as Bcc'd, and recipients listed
 in the headers but not the envelope are B<ignored>. Any Resent-To header
 is ignored for SMTP-submitted email.
 
 Only if no overriding recipients are given, kuvert checks the mail
 for a Resent-To header. If present, the email is sent out immediately
-to the Resent-To addresses I<without further processing>. (This is the 
-standard "bounce" behaviour for MUAs that don't pass 
+to the Resent-To addresses I<without further processing>. (This is the
+standard "bounce" behaviour for MUAs that don't pass
 recipients on to an MSP/MTA directly.)
 
 When sending outbound email, kuvert usually uses the From header from
-the queued email as identity. If the email was queued via SMTP, 
-the envelope again B<overrides> the mail headers. 
+the queued email as identity. If the email was queued via SMTP,
+the envelope again B<overrides> the mail headers.
 
-Note that kuvert sets the envelope sender using "-f" if sending email 
+Note that kuvert sets the envelope sender using "-f" if sending email
 via a local MTA program; if you are not sufficiently trusted by your MTA
 to do such, your mail may get an X-Authentication-Warning header tacked on
-that indicates your username and the fact that the envelope was 
+that indicates your username and the fact that the envelope was
 set explicitely.
 
 =head2 Passphrase Handling
 
-Kuvert does not handle your precious keys' passphrases. You can either 
+Kuvert does not handle your precious keys' passphrases. You can either
 elect to use gpg-agent as an (on-demand or caching) passphrase store, or
 you can tell kuvert what program it should run to query for a passphrase
-when required. Such a query program will be run in a pipeline to GnuPG, and 
+when required. Such a query program will be run in a pipeline to GnuPG, and
 kuvert will not access, store or cache the passphrases themselves:
 there are better options available for secret caching, for example
 the Linux in-kernel keystorage (L<keyctl(1)>).
 
 =head2 How Kuvert Decides What (Not) To Do
 
-For each recipient, kuvert can be told to apply one of 
-four different actions:
+For each recipient, kuvert can be told to apply one of
+five different action overrides:
 
 =over
 
@@ -1723,21 +1722,33 @@ The email is (clear/detached-) signed.
 =item fallback
 
 The email is encrypted and signed if there is a key available for this
-recipient or only signed. 
+recipient or only signed if not.
 
 =item fallback-all
 
-The email is encrypted and signed if keys are available for B<all> 
-recipients, or only signed otherwise. Recipients whose action is 
+The email is encrypted and signed if keys are available for B<all>
+recipients, or only signed otherwise. Recipients whose action is
 set to "none" and Bcc'd recipients are not affected by this action.
 
 The fallback-all action is an "all-or-nothing" action as far as encryption
-is concerned and ensures that no mix of encrypted or unencrypted versions 
-of this email are sent out: if we can we use encryption for everybody, or 
-otherwise everybody gets it signed (or even unsigned). 
+is concerned and ensures that no mix of encrypted or unencrypted versions
+of this email are sent out: if we can we use encryption for everybody, or
+otherwise everybody gets it signed (or even unsigned).
 (Bcc'd recipients are the exception.)
 
-=back 
+=item mustencrypt
+
+The mustencrypt action is an "all-or-nothing" action and ensures
+that any emails involving such addresses are only sent out if the emmail
+can be encrypted for every recipient.
+
+The email is rejected and B<not sent to anybody at all>, if any addresses
+are present that have the mustencrypt directive set but where no key is known.
+Bcc'd recipients I<are> included in this decision.
+
+This action overrides fallback-all.
+
+=back
 
 =head2 Specifying Actions
 
@@ -1746,11 +1757,11 @@ directives in the individual email addresses,
 action directives in the configuration file, an X-Kuvert header in your email,
 and finally the default action given in the configuration file.
 
-=over 
+=over
 
 =item 1.
 
-First kuvert looks for action directives in your configuration file. 
+First kuvert looks for action directives in your configuration file.
 Such directives are given as action plus regular expression
 to be matched against an address, and the first matching directive is used.
 
@@ -1764,28 +1775,34 @@ the configuration file is applied.
 Kuvert now checks for the presence of an X-Kuvert header: its content
 must be an action keyword, which is applied to all recipients of this email
 except the ones whose action at this stage is "none".
-(In other words: if you specify "no encryption/signing" for 
+(In other words: if you specify "no encryption and no signing" for
 some addresses, then this cannot be overridden in a blanket fashion.)
 
 =item 4.
 
-Kuvert then analyzes each recipient email address. If an address 
-has the format 
+Kuvert then analyzes each recipient email address. If an address
+has the format
  Some Text "action=someaction" <user@some.host>",
 kuvert strips the quoted part and overrides the addressee's
 action with someaction.
 
 =item 5.
 
-Finally kuvert checks if any recipient has action "fallback-all". If so,
-kuvert 
+If any "mustencrypt" recipient action is present, but no key is
+known (or given in an override, see section L</"Key Selection">), then the whole mail
+is rejected and not sent to anybody.
 
-=over 
+=item 6.
+
+Finally kuvert checks if any recipient has action "fallback-all". If so,
+kuvert
+
+=over
 
 =item a)
 
-checks if any recipients (except Bcc'd) have action "signonly" or 
-"none". If this is the case, all "fallback" and "fallback-all" actions are downgraded to 
+checks if any recipients (except Bcc'd) have action "signonly" or
+"none". If this is the case, all "fallback" and "fallback-all" actions are downgraded to
 "signonly".
 
 =item b)
@@ -1795,25 +1812,25 @@ all "fallback" and "fallback-all" actions are downgraded to "signonly".
 
 =back
 
-=item 6.
+=item 7.
 
-Recipients which are given in a Bcc: header are always treated independently 
-and separately from all others: 
+Recipients which are given in a Bcc: header are always treated independently
+and separately from all others (except for mustencrypt):
 any "fallback-all" action is downgraded to "fallback" for Bcc'd addresses,
 and if encryption is used, the email is encrypted separately so that no record
-of the Bcc'd recipient is visible in the email as sent out to the "normal" 
+of the Bcc'd recipient is visible in the email as sent out to the "normal"
 recipients. Also, any Bcc: header is removed before sending an email onwards.
 
-=back 
+=back
 
 =head2 Key Selection
 
 Kuvert depends on the order of keys in your keyring to determine which
 key (of potentially many) with a given address should be used for encryption.
 By default kuvert uses the B<last> key that it encounters for a given address.
-For people who have multiple keys for a single address this can cause 
-problems, and therefore kuvert has override mechanisms for encryption 
-key selection: You can specify a key to encrypt to for an address 
+For people who have multiple keys for a single address this can cause
+problems, and therefore kuvert has override mechanisms for encryption
+key selection: You can specify a key to encrypt to for an address
 in the configuration file (see below), or you can override the key selection
 for and within a single mail:
 
@@ -1822,11 +1839,11 @@ If the recipient address is given in the format
  Some Name "key=keyid" <user@some.host>
 
 Kuvert will strip the double-quoted part and use this particular
-key for this recipient and for this single email. The keyid must be given as 
+key for this recipient and for this single email. The keyid must be given as
 the hex key identifier. This mechanism overrides
 whatever associations your keyring contains and should be used with caution.
-Note that both key and action overrides can be given concurrently as a single 
-comma-separated entry like this: 
+Note that both key and action overrides can be given concurrently as a single
+comma-separated entry like this:
 
  Some Name "action=fallback,key=0x12345" <user@some.host>
 
@@ -1839,48 +1856,48 @@ signing this single email.
 The kuvert configuration file is plain text,
 blank lines and lines that start with "#" are ignored.
 
-The configuration has of two categories: options and address/action 
-specifications. 
+The configuration has of two categories: options and address/action
+specifications.
 
 =head2 Address and Action
 
-Address+action specifications are given one per line. 
+Address+action specifications are given one per line.
 Such lines must start with some whitespace, followed
-by an address regexp, followed by some whitespace and the action keyword. 
-For actions "fallback" and "fallback-all" kuvert also allows 
+by an address regexp, followed by some whitespace and the action keyword.
+For actions "fallback" and "fallback-all" kuvert also allows
 you to specify a single key identifier like this: "fallback,0x42BD645D".
 The remainder of the line is ignored.
 
-The address regexp is a full Perl regular expression and will be  
-applied to the raw SMTP address (i.e. not to the comment or name 
-in the email address), case-insensitively. The regular expression 
+The address regexp is a full Perl regular expression and will be
+applied to the raw SMTP address (i.e. not to the comment or name
+in the email address), case-insensitively. The regular expression
 may need to be anchored with ^ and $; kuvert does not do that for you.
-You must give just the core of the regexp (no m// or //), like in this 
+You must give just the core of the regexp (no m// or //), like in this
 example:
 
  # don't confuse mailing list robots
  ^.*-request@.*$	none
 
-The action keyword must be one of "none", "signonly", "fallback"
-or "fallback-all"; see section L</"How Kuvert Decides What (Not) To Do"> 
+The action keyword must be one of "none", "signonly", "fallback", "fallback-all"
+or "mustencrypt"; see section L</"How Kuvert Decides What (Not) To Do">
 for semantics. Order of action specifications
 in the config file is significant: the search terminates on first match.
 
-=head2 Options 
+=head2 Options
 
-Options are given one per line, and option lines must start with 
+Options are given one per line, and option lines must start with
 the option name followed by some whitespace. All options are case-sensitive.
-Depending on the option content, some or all of the remainder of 
-the option line will be assigned as option value. Inline comments are 
+Depending on the option content, some or all of the remainder of
+the option line will be assigned as option value. Inline comments are
 not supported.
 
-In the following list of options angle brackets denote required 
-arguments like this: 
+In the following list of options angle brackets denote required
+arguments like this:
 
  defaultkey <hexkeyid>
 
 Options that have boolean arguments recognize "1", "on" and "t" as true
-and "0", "off", "f" as false (plus their upper-case versions). 
+and "0", "off", "f" as false (plus their upper-case versions).
 Other options have more restricted argument types; kuvert generally
 sanity-checks options at startup.
 
@@ -1901,7 +1918,7 @@ Default: not set. This is independent of the syslog option above.
 =item mail-on-error <email address or blank>
 
 If kuvert encounters serious or fatal errors, an email is sent back
-to this address if set. Default: undef. This email is sent in addition to the 
+to this address if set. Default: undef. This email is sent in addition to the
 normal logging via syslog or logfile.
 
 =item queuedir <path>
@@ -1912,14 +1929,14 @@ must be owned by the user running kuvert and have mode 0700.
 
 =item tempdir <path>
 
-Where kuvert stores temporary files. Default: a directory called 
-kuvert.<username>.<pid> in $TMPDIR or /tmp. The directory is created if 
+Where kuvert stores temporary files. Default: a directory called
+kuvert.<username> in $TMPDIR or /tmp. The directory is created if
 necessary, and must be owned by the user running kuvert and have mode 0700.
 This directory is completely emptied after processing an email.
 
 =item identify <boolean>
 
-Whether kuvert should add an X-Mailer header to outbound emails. 
+Whether kuvert should add an X-Mailer header to outbound emails.
 Default: false. The X-Mailer header consists of the program name and version.
 
 =item preamble <boolean>
@@ -1974,25 +1991,25 @@ The password for SMTP authentication. Ignored if msserver or msuser are not set.
 =item mspass-from-query-secret <boolean>
 
 Whether the mspass should be retrieved using the query-secret program
-instead of giving the mspass in the config file. Ignored if msserver or 
-msuser are not set. If this option is set, the query-secret program will be used to ask for 
+instead of giving the mspass in the config file. Ignored if msserver or
+msuser are not set. If this option is set, the query-secret program will be used to ask for
 the "smtp-password" when the first mail is processed. The password will be
-cached if authentication succeeds or you will be asked again, until 
+cached if authentication succeeds or you will be asked again, until
 authentication succeeds.
 
 =item msp <program-path and args>
 
-Defines the program kuvert should use to deliver email. 
+Defines the program kuvert should use to deliver email.
 Default: "/usr/sbin/sendmail -om -oi -oem".
-This is ignored if msserver is set. The argument must include the 
+This is ignored if msserver is set. The argument must include the
 full path to the program, and the program must accept the common mail transfer
-agent arguments as defined in the Linux Standards Base 
+agent arguments as defined in the Linux Standards Base
 (see L<http://refspecs.linux-foundation.org/LSB_2.0.0/LSB-Core/LSB-Core.html#BASELIB-SENDMAIL-1>).
 
 =item can-detach <boolean>
 
 Indicates to kuvert that it can background itself on startup,
-detaching from the terminal. Default: false. 
+detaching from the terminal. Default: false.
 
 Detaching works only if your chosen mechanism for passphrase entry
 doesn't require interaction via the original terminal. This is the
@@ -2004,15 +2021,15 @@ X11 program with its own window.
 
 Kuvert can accept email for processing via SMTP. This option sets
 the TCP port kuvert listens on (localhost only). Default: 2587.
-Ignored if ma-user and ma-pass are not both set. If you want to use this 
+Ignored if ma-user and ma-pass are not both set. If you want to use this
 mechanism, tell your mail program to use localhost or 127.0.0.1 as outgoing
 mail server and enable SMTP Authentication (see below).
 
 =item ma-user <username>
 
-This option sets the required SMTP authentication username for accepting 
+This option sets the required SMTP authentication username for accepting
 mails via SMTP. Default: undef.
-Kuvert does not listen for SMTP submissions unless both ma-user 
+Kuvert does not listen for SMTP submissions unless both ma-user
 and ma-pass are set.
 Kuvert does not accept emails for processing via SMTP unless you prove your
 identity with SMTP Authentication (or anybody on your local machine could
@@ -2023,17 +2040,17 @@ This can be anything and doesn't have to be a real account name.
 
 =item ma-pass <password>
 
-This option sets the password your mail user agent must use for 
+This option sets the password your mail user agent must use for
 SMTP Authentication if submitting mails via SMTP. Default: unset.
-Kuvert does not listen for SMTP submissions unless both ma-user 
+Kuvert does not listen for SMTP submissions unless both ma-user
 and ma-pass are set. This password does not have to be (actually shouldn't be)
 your real account's password. Note that using SMTP submission
-requires that you protect your kuvert configuration file with strict 
+requires that you protect your kuvert configuration file with strict
 permissions (0600 is suggested).
 
 =item defaultkey <hexkeyid>
 
-Specifies a default key to use as signing key. Default: unset, 
+Specifies a default key to use as signing key. Default: unset,
 which means GnuPG gets to choose (usually the first available secret key).
 Can be overridden in the From: address, see section L</"Key Selection">.
 
@@ -2051,15 +2068,15 @@ Default: false.
 
 Whether kuvert should delegate all passphrase handling to the gpg-agent
 and call gpg with appropriate options. Default: false.
-If not set, kuvert will ask the user (or some nominated passphrase store) 
+If not set, kuvert will ask the user (or some nominated passphrase store)
 for passphrases on demand.
 
 =item query-secret <program-path and args with %s>
 
-Tells kuvert which program to use for passphrase retrieval. 
+Tells kuvert which program to use for passphrase retrieval.
 Default: "/bin/sh -c 'stty -echo; read -p \"Passphrase %s: \" X; \
 stty echo; echo $X'"
-Ignored if use-agent is set. Kuvert does not store passphrases internally 
+Ignored if use-agent is set. Kuvert does not store passphrases internally
 but rather runs the indicated program in a pipeline with gpg when signing.
 If you use a passphrase store (like the Linux-kernel keyutils or secret-agent
 or the like), enter your retrieval program here.
@@ -2071,12 +2088,12 @@ Note that the default query program prohibits kuvert from backgrounding itself.
 
 =item flush-secret <program-path and args with %s>
 
-This program is called to invalidate an external passphrase cache if 
+This program is called to invalidate an external passphrase cache if
 kuvert is notified by gpg of the passphrase being invalid. Default: undef.
 Ignored if use-agent is set. The program is run with kuvert's environment
 and with the first %s of its argument spec being replaced by the hex keyid
 in question. Its exit code is ignored. If can-detach is not set, the program
-has access to kuvert's terminal. 
+has access to kuvert's terminal.
 
 =back
 
@@ -2085,12 +2102,12 @@ has access to kuvert's terminal.
 Kuvert usually logs informational messages to syslog and/or its own logfile,
 both of which can be disabled and adjusted.
 
-If kuvert detects a fault that makes successful processing of 
-a particular email impossible, kuvert will report that on STDERR (if not 
-detached) and also email an error report if the option mail-on-error 
-is enabled. Such partially or completely unprocessed mails are left 
-in the queue but are renamed (the name is prefixed with "failed."); 
-it is up to you to either remove such leftovers or rename them to something 
+If kuvert detects a fault that makes successful processing of
+a particular email impossible, kuvert will report that on STDERR (if not
+detached) and also email an error report if the option mail-on-error
+is enabled. Such partially or completely unprocessed mails are left
+in the queue but are renamed (the name is prefixed with "failed.");
+it is up to you to either remove such leftovers or rename them to something
 all-numeric once the problem has been resolved.
 
 The behaviour is similar if fatal problems are encountered; after
@@ -2113,7 +2130,7 @@ All other signals are ignored.
 
 =over
 
-=item ~/.kuvert 
+=item ~/.kuvert
 
 The configuration file read by kuvert and kuvert_submit.
 
@@ -2144,4 +2161,3 @@ it under the terms of the GNU General Public License version 2
 as published by the Free Software Foundation.
 
 =cut
-
