@@ -1,3 +1,11 @@
+kuvert (2.1.0) unstable; urgency=low
+
+  * new action 'mustencrypt'
+  * various bug fixes and robustness improvements
+  * updated dependencies
+
+ -- Alexander Zangerl <az@debian.org>  Sat, 01 Apr 2017 21:01:58 +1000
+
 kuvert (2.0.14) unstable; urgency=low
 
   * use full 16 digit key id when interacting with external passhrase cache
