@@ -1,3 +1,10 @@
+kuvert (2.1.1) unstable; urgency=high
+
+  * fix encoding issues for log output (closes: #859903)
+  * updated dependencies, now need encode::locale
+
+ -- Alexander Zangerl <az@debian.org>  Mon, 10 Apr 2017 21:11:52 +1000
+
 kuvert (2.1.0) unstable; urgency=low
 
   * new action 'mustencrypt'
