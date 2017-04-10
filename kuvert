@@ -38,6 +38,7 @@ use File::Temp qw(:mktemp);
 use Time::HiRes;
 use Proc::ProcessTable;
 use Encode;
+use Encode::Locale;
 use POSIX qw();
 
 # some global stuff
@@ -54,7 +55,6 @@ my($username,$home)=(getpwuid($<))[0,7];
 my $rcfile="$home/.kuvert";
 
 my $timeout=600;		# seconds to wait for gpg
-
 
 # configuration directives
 my (%config,$debug,%email2key);
@@ -1032,7 +1032,7 @@ sub read_keyring
 	foreach (@tmp)
 	{
 		# gpg docs say output is utf8-encoded
-		my $native = Encode::decode('utf-8', $_, Encode::FB_WARN);
+		my $native = Encode::decode('utf-8', $_, Encode::FB_DEFAULT);
 		my @info=split(/:/, $native);
 		# only public keys and uids are of interest
 		next if ($info[0] ne "pub" && $info[0] ne "uid");
@@ -1043,8 +1043,11 @@ sub read_keyring
 		# ignore expired, revoked and other bad keys
 		if (my $skip = $badcauses{$info[1]})
 		{
-			&logit("ignoring $info[0] key 0x$info[4] address $info[9], reason: $skip");
-			dlogit("ignoring $info[0] key 0x$info[4] address $info[9], reason: $skip");
+			my $msg = "ignoring $info[0] "
+					. ($info[4]? "key 0x$info[4] " : "")
+					. ($info[9]? "address $info[9] " : "") . ", reason: $skip";
+			&logit($msg);
+			dlogit($msg);
 			next;
 		}
 
@@ -1339,6 +1342,7 @@ sub sign_encrypt
 
 # logs the argument strings to syslog and/or the logfile
 # uses global %config
+# output encoding is whatever the locale specifies, fallback is to use replacement characters
 # returns nothing
 sub logit
 {
@@ -1348,28 +1352,30 @@ sub logit
 	{
 		if (!$config{logfh})	# not open yet?
 		{
-	    $config{logfh}=FileHandle->new(">>$config{logfile}");
+	    $config{logfh}=FileHandle->new(">> $config{logfile}");
 	    die "can't open logfile $config{logfile}: $!\n"
 					if (!$config{logfh});
 	    $config{logfh}->autoflush(1);
 		}
-
-		print { $config{logfh} } scalar(localtime)." ".join("\n\t",@msgs)."\n";
+		# replacement chars, please.
+		print { $config{logfh} } scalar(localtime)
+				." " .Encode::encode(locale => join("\n\t",@msgs)."\n", Encode::FB_DEFAULT);
 	}
 
 	if ($config{syslog})
 	{
 		setlogsock('unix');
 		openlog($progname,"pid,cons",$config{syslog});
-		syslog("notice",join("\n",@msgs));
+		syslog("notice", Encode::encode(locale => join("\n",@msgs), Encode::FB_DEFAULT));
 		closelog;
 	}
 }
 
 # debug log to stderr
+# uses the locale-sourced encoding, with replacement character where the encoding doesn't cover the data
 sub dlogit
 {
-	print STDERR join("\n",@_)."\n" if ($debug);
+	print STDERR Encode::encode(locale => join("\n",@_)."\n", Encode::FB_DEFAULT) if ($debug);
 }
 
 # alerts the user of some problem
@@ -1909,11 +1915,13 @@ sanity-checks options at startup.
 
 Whether kuvert should use syslog for logging, and if so, what facility to
 use. Default: nothing. This is independent of the logfile option below.
+kuvert uses your locale's encoding for all messages sent to syslog.
 
 =item logfile <path or blank>
 
 Whether kuvert should write log messages to a file, appending to it.
 Default: not set. This is independent of the syslog option above.
+kuvert uses your locale's encoding for saving data to the logfile.
 
 =item mail-on-error <email address or blank>
 
