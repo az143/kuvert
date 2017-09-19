@@ -805,6 +805,7 @@ sub read_config
 		# $$ not good in tempdir: config is read before fork, then possibly again on -r but by a different process
 		tempdir=>($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp")."/kuvert.$username",
 		alwaystrust=>undef,
+		gpg => "gpg",
 		interval=>60,
 		"query-secret"=>"/bin/sh -c 'stty -echo; read -p \"Passphrase %s: \" X; stty echo; echo \$X'",
 		"flush-secret"=>undef,
@@ -891,6 +892,13 @@ with the new config file in place.\n");
 						if ($value && !-x (split(/\s+/,$value))[0]);
 				$options{$key}=$value;
 	    }
+			# full program path
+			elsif ($key eq "gpg")
+			{
+				bailout("bad value \"$value\" for key \"$key\": not executable")
+						if (!-x $value);
+				$options{$key} = $value;
+			}
 	    # program with %s escape
 	    elsif ($key =~ /^(query-secret|flush-secret)$/)
 	    {
@@ -1022,7 +1030,7 @@ sub read_keyring
 	logit("reading keyring...");
 	my $tf="$config{tempdir}/subproc";
 
-	my @tmp=`gpg -q --batch --list-keys --with-colons --no-expensive-trust-checks 2>$tf`;
+	my @tmp=`$config{gpg} -q --batch --list-keys --with-colons --no-expensive-trust-checks 2>$tf`;
 	bailout("keyring reading failed: $?",(-r $tf && readfile($tf)))
 			if ($? or $? >> 8);
 	logit("finished reading keyring");
@@ -1192,7 +1200,7 @@ sub send_entity
 sub sign_encrypt
 {
 	my ($signkey,$infile,$outfile,@recips)=@_;
-	my @cmd=qw(gpg -q -t -a --batch --status-fd 2);
+	my @cmd = ($config{gpg},qw(-q -t -a --batch --status-fd 2));
 	my ($precmd,$pid);
 
 	push @cmd,"--always-trust" if ($config{alwaystrust});
@@ -2013,6 +2021,12 @@ This is ignored if msserver is set. The argument must include the
 full path to the program, and the program must accept the common mail transfer
 agent arguments as defined in the Linux Standards Base
 (see L<http://refspecs.linux-foundation.org/LSB_2.0.0/LSB-Core/LSB-Core.html#BASELIB-SENDMAIL-1>).
+
+=item gpg <program-path>
+
+Defines which custom GnuPG executable kuvert should use.
+If this option is given the argument must be a full path to an executable.
+Default: "gpg", i.e. anywhere in the path.
 
 =item can-detach <boolean>
 

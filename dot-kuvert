@@ -54,6 +54,7 @@ can-detach t
 
 defaultaction fallback-all
 
+gpg /usr/bin/gpg
 alwaystrust t
 
 use-agent t
