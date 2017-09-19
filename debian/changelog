@@ -1,3 +1,11 @@
+kuvert (2.2.0) unstable; urgency=low
+
+  * new config option to make kuvert use your preferred gpg
+    binary (e.g. /usr/bin/gpg1)
+  * updated copyright (updated year, FSF address)
+
+ -- Alexander Zangerl <az@debian.org>  Tue, 19 Sep 2017 21:42:00 +1000
+
 kuvert (2.1.1) unstable; urgency=high
 
   * fix encoding issues for log output (closes: #859903)

@@ -7,7 +7,7 @@ Standards-Version: 3.9.8
 
 Package: kuvert
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, gnupg (>= 1.0.6), sendmail | mail-transport-agent, libnet-smtps-perl, ${perl:Depends}, libmailtools-perl, libmime-tools-perl, libfile-slurp-perl, libnet-server-mail-perl, libauthen-sasl-perl, libproc-processtable-perl, libencode-locale-perl
+Depends: ${shlibs:Depends}, ${misc:Depends}, gnupg | gnupg1, sendmail | mail-transport-agent, libnet-smtps-perl, ${perl:Depends}, libmailtools-perl, libmime-tools-perl, libfile-slurp-perl, libnet-server-mail-perl, libauthen-sasl-perl, libproc-processtable-perl, libencode-locale-perl
 Suggests: keyutils 
 Homepage: http://www.snafu.priv.at/mystuff/kuvert/
 Description: wrapper that encrypts or signs outgoing mail
