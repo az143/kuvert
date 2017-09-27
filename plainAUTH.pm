@@ -6,7 +6,7 @@ use MIME::Base64;
 use vars qw( $VERSION );
 $VERSION = '1.0';
 
-# the following are required by nsme::extension 
+# the following are required by nsme::extension
 # but not documented :(
 sub init
 {
@@ -38,7 +38,8 @@ sub handle_auth
 {
     my ($self,$args)=@_;
     my ($method,$param);
-    $args=~/^(LOGIN|PLAIN)\s*(.*)$/ && (($method,$param)=($1,$2));
+    $args=~/^(LOGIN|PLAIN|login|plain)\s*(.*)$/ && (($method,$param)=($1,$2));
+    $method = uc($method);
 
     if ($self->{AUTH}->{active})
     {
@@ -58,15 +59,15 @@ sub handle_auth
     }
 
     $self->{AUTH}->{active}=$method;
-    
-    if ($param eq '*') 
+
+    if ($param eq '*')
     {
 	delete $self->{AUTH}->{active};
 	$self->reply(501, "Authentication cancelled.");
 	return undef;
     }
 
-    if ($method eq 'PLAIN') 
+    if ($method eq 'PLAIN')
     {
 	if ($param)		# plain: immediate with args
 	{
@@ -87,7 +88,7 @@ sub handle_auth
 	    return undef;
 	}
     }
-    elsif ($method eq 'LOGIN') 
+    elsif ($method eq 'LOGIN')
     {
 	# login is always two challenges
 	$self->reply(334, "VXNlcm5hbWU6"); # username
@@ -105,7 +106,7 @@ sub run_callback
     my $ok;
 
     my $ref=$self->{callback}->{AUTH};
-    if (ref $ref eq 'ARRAY' && ref $ref->[0] eq 'CODE') 
+    if (ref $ref eq 'ARRAY' && ref $ref->[0] eq 'CODE')
     {
 	my $c=$ref->[0];
 	$ok=&$c($self,$user,$pass);
@@ -140,7 +141,7 @@ sub process_response
 	$self->reply(535, "5.7.8 Authentication failed.");
 	return undef;
     }
-    
+
     if ($self->{AUTH}->{active} eq "PLAIN")
     {
 	# plain is easy: only one response containing everything
@@ -163,7 +164,7 @@ sub process_response
 	{
 	    return run_callback($self,$self->{AUTH}->{user},$input);
 	}
-	else			
+	else
 	{
 	    # nope, first time: save username and challenge
 	    # for password
@@ -173,7 +174,7 @@ sub process_response
 	    return undef;
 	}
     }
-    else 
+    else
     {
 	delete $self->{AUTH}->{active};
 	$self->reply(535, "Authentication mixed up.");
