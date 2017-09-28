@@ -4,7 +4,7 @@
 # does gpg signing/signing+encrypting transparently, based
 # on the content of your public keyring(s) and your preferences.
 #
-# copyright (c) 1999-2014 Alexander Zangerl <az@snafu.priv.at>
+# copyright (c) 1999-2017 Alexander Zangerl <az@snafu.priv.at>
 #
 #   This program is free software; you can redistribute it and/or modify
 #   it under the terms of the GNU General Public License version 2
@@ -27,10 +27,12 @@ use Fcntl qw(:flock);
 use Getopt::Std;
 use MIME::Parser;		# for parsing the mime-stream
 use Mail::Address;		# for parsing to and cc-headers
-use Net::SMTPS;			# for sending via smtp, which ssl
+use Net::SMTP 1.28;		# for sending email, smtp, smtps and starttls
+use IO::Socket::SSL;	# ssl is not on always but less hassle to depend on the module here
 use Sys::Hostname;		# ditto
 use Net::Server::Mail::ESMTP;	# for receiving via smtp
 use IO::Socket::INET;		# ditto
+
 use FileHandle;
 use File::Slurp;
 use File::Find;
@@ -60,16 +62,18 @@ my $timeout=600;		# seconds to wait for gpg
 my (%config,$debug,%email2key);
 
 my %options;
-if (!getopts("dork",\%options) || @ARGV)
+if (!getopts("dorkc:",\%options) || @ARGV)
 {
-	die "usage: $progname [-d] [-o] [-r|-k]
+	die "usage: $progname [-d] [-o] [-r|-k] [-c configfile]
 -k: kill running $progname daemon
 -d: debug mode
 -r: reload keyrings and configfile
 -o: one-shot mode, run queue once and exit
+-c <configfile>: use alternate config file instead of ~/.kuvert
 This is: $progname $version.\n";
 }
 $debug=$options{"d"};
+$rcfile = $options{c} if ($options{c});
 
 die("no configuration file exists. See man $progname(1) for details.\n")
     if (!-e $rcfile);
@@ -1103,19 +1107,27 @@ sub send_entity
 {
 	my ($ent,$from,@recips,)=@_;
 
+
 	if ($config{msserver} && $config{msport})
 	{
 		my $dom=hostname;
 
-		my $s=Net::SMTPS->new( $config{msserver}, Port => $config{msport},
-													 Hello => $dom,
-													 doSSL => $config{ssl},
-													 SSL_key_file => $config{"ssl-key"},
-													 SSL_cert_file => $config{"ssl-cert"},
-													 SSL_ca_file => $config{"ssl-ca"} );
-		return("Cannot connect to mail server ".$config{msserver}.": $!")
+		$IO::Socket::SSL::DEBUG = 3 if ($config{ssl} && $debug);
+		my $s=Net::SMTP->new( $config{msserver},
+													Port => $config{msport},
+													Hello => $dom,
+													SSL => (defined $config{ssl} && $config{ssl} eq "ssl"? 1 : undef),
+													SSL_key_file => $config{"ssl-key"},
+													SSL_cert_file => $config{"ssl-cert"},
+													SSL_ca_file => $config{"ssl-ca"},
+													Debug => $debug);
+		return("Cannot connect to mail server ".$config{msserver}.": $@")
 				if (!$s);
-
+		# do negotiate starttls if asked to
+		if (defined $config{ssl} && $config{ssl} eq "starttls")
+		{
+			$s->starttls or return ("Cannot negotiate STARTTLS: $@");
+		}
 		# do smtp auth if asked to
 		if ($config{msuser})
 		{
@@ -1569,7 +1581,7 @@ kuvert - Automatically sign and/or encrypt emails based on the recipients
 
 =head1 SYNOPSIS
 
-kuvert [-d] [-o] [-r|-k]
+kuvert [-d] [-o] [-r|-k] [-c configfile]
 
 =head1 DESCRIPTION
 
@@ -1616,6 +1628,10 @@ respective process.
 
 Tells a running kuvert daemon to terminate cleanly. This is equivalent
 to sending a SIGTERM to the respective process.
+
+=item -c <configfile>
+
+Tells kuvert to use the given config file instead of ~/.kuvert.
 
 =back
 
