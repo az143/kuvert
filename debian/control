@@ -2,12 +2,12 @@ Source: kuvert
 Section: mail
 Priority: extra
 Maintainer: Alexander Zangerl <az@debian.org>
-Build-Depends: debhelper (>= 8), dpkg-dev (>= 1.16.1~)
+Build-Depends: debhelper (>= 9), dpkg-dev (>= 1.16.1~)
 Standards-Version: 3.9.8
 
 Package: kuvert
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, gnupg | gnupg1, sendmail | mail-transport-agent, libnet-smtps-perl, ${perl:Depends}, libmailtools-perl, libmime-tools-perl, libfile-slurp-perl, libnet-server-mail-perl, libauthen-sasl-perl, libproc-processtable-perl, libencode-locale-perl
+Depends: ${shlibs:Depends}, ${misc:Depends}, gnupg | gnupg1, sendmail | mail-transport-agent, libnet-smtps-perl, perl (>= 5.24), libmailtools-perl, libmime-tools-perl, libfile-slurp-perl, libnet-server-mail-perl, libauthen-sasl-perl, libproc-processtable-perl, libencode-locale-perl, libio-socket-ssl-perl
 Suggests: keyutils 
 Homepage: http://www.snafu.priv.at/mystuff/kuvert/
 Description: wrapper that encrypts or signs outgoing mail

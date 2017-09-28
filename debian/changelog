@@ -1,3 +1,13 @@
+kuvert (2.2.1) unstable; urgency=medium
+
+  * new runtime option -c for different config file
+  * switched to net::smtp (from perlcore), away from net::smtps.
+  * updated dependencies, we need stretch's perl or newer
+	  because jessie's came with a much too ancient net::smtp.
+  * lifted debhelper compat version
+	
+ -- Alexander Zangerl <az@debian.org>  Thu, 28 Sep 2017 20:02:27 +1000
+
 kuvert (2.2.0) unstable; urgency=low
 
   * new config option to make kuvert use your preferred gpg
