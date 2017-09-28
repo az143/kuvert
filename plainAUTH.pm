@@ -4,7 +4,7 @@ use base qw(Net::Server::Mail::ESMTP::Extension);
 use MIME::Base64;
 
 use vars qw( $VERSION );
-$VERSION = '1.0';
+$VERSION = '1.1';
 
 # the following are required by nsme::extension 
 # but not documented :(
@@ -36,64 +36,65 @@ sub option
 # and the actual auth handler
 sub handle_auth
 {
-    my ($self,$args)=@_;
-    my ($method,$param);
-    $args=~/^(LOGIN|PLAIN)\s*(.*)$/ && (($method,$param)=($1,$2));
+	my ($self,$args)=@_;
+	my ($method,$param);
+	$args=~/^(LOGIN|PLAIN|login|plain)\s*(.*)$/ 
+			&& (($method,$param)=(uc($1),$2));
 
-    if ($self->{AUTH}->{active})
-    {
-	delete $self->{AUTH}->{active};
-	$self->reply(535, "Authentication phases mixed up.");
-	return undef;		# if rv given, server shuts conn!
-    }
-    elsif ($self->{AUTH}->{completed})
-    {
-	$self->reply(504,"Already authenticated.");
-	return undef;
-    }
-    elsif (!$method)
-    {
-	$self->reply(501,"Unknown authentication method.");
-	return undef;
-    }
-
-    $self->{AUTH}->{active}=$method;
-    
-    if ($param eq '*') 
-    {
-	delete $self->{AUTH}->{active};
-	$self->reply(501, "Authentication cancelled.");
-	return undef;
-    }
-
-    if ($method eq 'PLAIN') 
-    {
-	if ($param)		# plain: immediate with args
+	if ($self->{AUTH}->{active})
 	{
+		delete $self->{AUTH}->{active};
+		$self->reply(535, "Authentication phases mixed up.");
+		return undef;		# if rv given, server shuts conn!
+	}
+	elsif ($self->{AUTH}->{completed})
+	{
+		$self->reply(504,"Already authenticated.");
+		return undef;
+	}
+	elsif (!$method)
+	{
+		$self->reply(501,"Unknown authentication method.");
+		return undef;
+	}
+
+	$self->{AUTH}->{active}=$method;
+	
+	if ($param eq '*') 
+	{
+		delete $self->{AUTH}->{active};
+		$self->reply(501, "Authentication cancelled.");
+		return undef;
+	}
+
+	if ($method eq 'PLAIN') 
+	{
+		if ($param)		# plain: immediate with args
+		{
 	    my (undef,$user,$pwd)=split(/\0/,decode_base64($param),3);
 	    if (!$user)
 	    {
-		delete $self->{AUTH}->{active};
-		$self->reply(535, "5.7.8 Authentication failed.");
-		return undef;
+				delete $self->{AUTH}->{active};
+				$self->reply(535, "5.7.8 Authentication failed.");
+				return undef;
 	    }
 	    return run_callback($self,$user,$pwd);
-	}
-	else			# plain: or empty challenge and then response
-	{
+		}
+		else			# plain: or empty challenge and then response
+		{
 	    $self->reply(334," ");
 	    # undocumented but crucial: direct stuff to this method
 	    $self->next_input_to(\&process_response);
 	    return undef;
+		}
 	}
-    }
-    elsif ($method eq 'LOGIN') 
-    {
-	# login is always two challenges
-	$self->reply(334, "VXNlcm5hbWU6"); # username
-	$self->next_input_to(\&process_response);
-	return undef;
-    }
+	elsif ($method eq 'LOGIN') 
+	{
+		# login is always two challenges
+		$self->reply(334, "VXNlcm5hbWU6"); # username
+		$self->next_input_to(\&process_response);
+		return undef;
+	}
 }
 
 # runs user-supplied callback on username and password
@@ -101,84 +102,84 @@ sub handle_auth
 # sets complete if ok, clears active either way
 sub run_callback
 {
-    my ($self,$user,$pass)=@_;
-    my $ok;
+	my ($self,$user,$pass)=@_;
+	my $ok;
 
-    my $ref=$self->{callback}->{AUTH};
-    if (ref $ref eq 'ARRAY' && ref $ref->[0] eq 'CODE') 
-    {
-	my $c=$ref->[0];
-	$ok=&$c($self,$user,$pass);
-    }
-    if ($ok)
-    {
-	$self->reply(235, "Authentication successful");
-	$self->{AUTH}->{completed}=1;
-    }
-    else
-    {
-	$self->reply(535,"Authentication failed.");
-    }
-    delete $self->{AUTH}->{active};
-    return undef;
+	my $ref=$self->{callback}->{AUTH};
+	if (ref $ref eq 'ARRAY' && ref $ref->[0] eq 'CODE') 
+	{
+		my $c=$ref->[0];
+		$ok=&$c($self,$user,$pass);
+	}
+	if ($ok)
+	{
+		$self->reply(235, "Authentication successful");
+		$self->{AUTH}->{completed}=1;
+	}
+	else
+	{
+		$self->reply(535,"Authentication failed.");
+	}
+	delete $self->{AUTH}->{active};
+	return undef;
 }
 
 # deals with any response, based on active method
 sub process_response
 {
-    my ($self,$args)=@_;
+	my ($self,$args)=@_;
 
-    if (!$self->{AUTH}->{active} || $self->{AUTH}->{completed})
-    {
-	delete $self->{AUTH}->{active};
-	$self->reply(535, "Authentication phases mixed up.");
-	return undef;
-    }
-    if (!$args)
-    {
-	delete $self->{AUTH}->{active};
-	$self->reply(535, "5.7.8 Authentication failed.");
-	return undef;
-    }
-    
-    if ($self->{AUTH}->{active} eq "PLAIN")
-    {
-	# plain is easy: only one response containing everything
-	my (undef,$user,$pwd)=split(/\0/,decode_base64($args),3);
-	if (!$user)
+	if (!$self->{AUTH}->{active} || $self->{AUTH}->{completed})
 	{
+		delete $self->{AUTH}->{active};
+		$self->reply(535, "Authentication phases mixed up.");
+		return undef;
+	}
+	if (!$args)
+	{
+		delete $self->{AUTH}->{active};
+		$self->reply(535, "5.7.8 Authentication failed.");
+		return undef;
+	}
+	
+	if ($self->{AUTH}->{active} eq "PLAIN")
+	{
+		# plain is easy: only one response containing everything
+		my (undef,$user,$pwd)=split(/\0/,decode_base64($args),3);
+		if (!$user)
+		{
 	    delete $self->{AUTH}->{active};
 	    $self->reply(535, "5.7.8 Authentication failed.");
 	    return undef;
+		}
+		return run_callback($self,$user,$pwd);
 	}
-	return run_callback($self,$user,$pwd);
-    }
-    elsif ($self->{AUTH}->{active} eq "LOGIN")
-    {
-	# uglier: two challenges for username+password
-	my ($input)=split(/\0/,decode_base64($args));
+	elsif ($self->{AUTH}->{active} eq "LOGIN")
+	{
+		# uglier: two challenges for username+password
+		my ($input)=split(/\0/,decode_base64($args));
 
-	# is this the second time round?
-	if ($self->{AUTH}->{user})
-	{
+		# is this the second time round?
+		if ($self->{AUTH}->{user})
+		{
 	    return run_callback($self,$self->{AUTH}->{user},$input);
-	}
-	else			
-	{
+		}
+		else			
+		{
 	    # nope, first time: save username and challenge
 	    # for password
 	    $self->{AUTH}->{user}=$input;
 	    $self->reply(334, "UGFzc3dvcmQ6"); # password
 	    $self->next_input_to(\&process_response);
 	    return undef;
+		}
 	}
-    }
-    else 
-    {
-	delete $self->{AUTH}->{active};
-	$self->reply(535, "Authentication mixed up.");
-	return undef;
-    }
+	else 
+	{
+		delete $self->{AUTH}->{active};
+		$self->reply(535, "Authentication mixed up.");
+		return undef;
+	}
 }
 
 1;
