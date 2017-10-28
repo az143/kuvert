@@ -72,16 +72,12 @@ if (!getopts("dorkc:",\%options) || @ARGV)
 -c <configfile>: use alternate config file instead of ~/.kuvert
 This is: $progname $version.\n";
 }
-$debug=$options{"d"};
-$rcfile = $options{c} if ($options{c});
-
-die("no configuration file exists. See man $progname(1) for details.\n")
-    if (!-e $rcfile);
 
 # now handle the kill/reload stuff
 my $piddir=($ENV{'TMPDIR'}?$ENV{'TMPDIR'}:"/tmp");
 my $pidname="$progname.$<";
 my $pidf="$piddir/$pidname.pid";
+$debug=$options{"d"};
 
 # who's there?
 my %instances;
@@ -126,6 +122,10 @@ die("other instance(s) with pids ".join(", ",keys %instances)
     if (keys %instances);
 
 # read in the config, setup dirs, logging, defaultkey etc.
+$rcfile = $options{c} if ($options{c});
+
+die("no configuration file exists. See man $progname(1) for details.\n")
+    if (!-e $rcfile);
 %config=&read_config;
 dlogit("reading config file");
 # log startup after config is read and logging prefs are known
