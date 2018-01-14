@@ -1,3 +1,11 @@
+kuvert (2.2.2) unstable; urgency=medium
+
+  * kill/reload code now runs earlier, which makes
+    -k/-r work without (explicit or default) config file
+  * lifted standards version, fixed priority optional
+
+ -- Alexander Zangerl <az@debian.org>  Sat, 28 Oct 2017 11:39:51 +1000
+
 kuvert (2.2.1) unstable; urgency=medium
 
   * new runtime option -c for different config file
