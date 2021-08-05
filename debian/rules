@@ -18,9 +18,7 @@ build-indep: build-stamp
 
 build-stamp:
 	dh_testdir
-
-	$(MAKE)
-
+	dh_auto_build
 	touch build-stamp
 
 clean:
