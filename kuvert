@@ -393,7 +393,7 @@ sub process_file
 	return "Could not parse From: header!" if (!@froms);
 
 	# envelope from is: x-kuvert-from if present or from
-	my $fromaddr=@efrom?$efrom[0]->[0]:$froms[0]->[3];
+	my $fromaddr=@efrom?$efrom[0]->[0]:$froms[0]->[0];
 
 	my $signkey=$config{defaultkey};
 	# do we have a key override
