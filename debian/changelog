@@ -1,3 +1,9 @@
+kuvert (2.2.4) unstable; urgency=medium
+
+  * better tempdir handling
+
+ -- Alexander Zangerl <az@debian.org>  Fri, 27 Aug 2021 10:47:05 +1000
+
 kuvert (2.2.3) unstable; urgency=medium
 
   * support cross-compilation (closes: #991784)
