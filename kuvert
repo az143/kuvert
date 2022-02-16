@@ -404,7 +404,7 @@ sub process_file
   return "Could not parse From: header!" if (!@froms);
 
   # envelope from is: x-kuvert-from if present or from
-  my $fromaddr=@efrom?$efrom[0]->[0]:$froms[0]->[3];
+  my $fromaddr=@efrom?$efrom[0]->[0]:$froms[0]->[0];
 
   my $signkey=$config{defaultkey};
   # do we have a key override
@@ -1606,6 +1606,16 @@ defined in RFC3156 and finally sent to your outbound mail server.
 Kuvert uses GnuPG for all cryptographic tasks and is designed to interface
 cleanly with external secret caching tools.
 
+=head1 GETTING STARTED
+
+If no configuration file (~/.kuvert) exists or if that is empty, then
+kuvert will hand all emails directly on to sendmail, without any
+modifications whatsoever.
+
+To let kuvert perform encryption/signing operations,
+at a minimum you need to set the "defaultaction" option (to a value other
+than its default, "none").
+
 =head1 OPTIONS
 
 After startup kuvert periodically scans its queue directory and processes
@@ -1780,7 +1790,7 @@ otherwise everybody gets it signed (or even unsigned).
 =item mustencrypt
 
 The mustencrypt action is an "all-or-nothing" action and ensures
-that any emails involving such addresses are only sent out if the emmail
+that any emails involving such addresses are only sent out if the email
 can be encrypted for every recipient.
 
 The email is rejected and B<not sent to anybody at all>, if any addresses
