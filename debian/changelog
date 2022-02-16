@@ -1,3 +1,10 @@
+kuvert (2.2.5) unstable; urgency=medium
+
+  * correct sendmail -f argument (closes: #1005751)
+  * adjusted pod/manpage text to clarify minimum config needs
+
+ -- Alexander Zangerl <az@debian.org>  Wed, 16 Feb 2022 20:09:55 +1000
+
 kuvert (2.2.4) unstable; urgency=medium
 
   * better tempdir handling
